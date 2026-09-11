@@ -21,8 +21,6 @@ def test_dependency_manifests_are_sorted_unique_and_profiles_do_not_overlap():
     names = (
         "alpine-runtime.txt",
         "alpine-build.txt",
-        "alpine-phone.txt",
-        "alpine-motion-lab.txt",
     )
     profiles = {name: packages(name) for name in names}
 
@@ -39,7 +37,6 @@ def test_dependency_manifests_are_sorted_unique_and_profiles_do_not_overlap():
 def test_runtime_and_build_manifests_cover_native_shell_contract():
     runtime = set(packages("alpine-runtime.txt"))
     build = set(packages("alpine-build.txt"))
-    phone = set(packages("alpine-phone.txt"))
 
     assert {
         "gtk4-layer-shell",
@@ -61,7 +58,6 @@ def test_runtime_and_build_manifests_cover_native_shell_contract():
         "libinput-dev",
         "sqlite-dev",
     } <= build
-    assert {"feedbackd", "modemmanager", "iio-sensor-proxy", "libssc"} <= phone
 
 
 def test_arch_core_dependencies_are_separate_and_complete():
@@ -96,8 +92,8 @@ def test_installer_invokes_matching_manager(tmp_path, manager, profile, prefix, 
     result = subprocess.run([str(ROOT / "scripts/install-dependencies"), profile],
                             env=env, capture_output=True, text=True, check=True)
     assert result.stdout.splitlines() == prefix + [p for m in manifests for p in packages(m)]
-    if manager == "pacman":
-        rejected = subprocess.run([str(ROOT / "scripts/install-dependencies"), "phone"],
+    for excluded in ("phone", "all", "motion-lab"):
+        rejected = subprocess.run([str(ROOT / "scripts/install-dependencies"), excluded],
                                   env=env, capture_output=True, text=True)
         assert rejected.returncode == 2
         assert not rejected.stdout
@@ -111,8 +107,6 @@ def test_dependency_installer_consumes_the_manifests():
     for name in (
         "alpine-runtime.txt",
         "alpine-build.txt",
-        "alpine-phone.txt",
-        "alpine-motion-lab.txt",
     ):
         assert name in source
 

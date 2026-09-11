@@ -6,7 +6,9 @@ public core snapshot deliberately starts a new Git root without that history.
 This preserves the private development record without publishing historical
 binaries, device utilities, keyboard forks or personal screenshots.
 
-release/source-files.json records the SHA-256 of each exported source input.
+release/source-files.json records the SHA-256 of each source input at the initial
+export (root commit 1c8419e). It is a historical extraction record, not a manifest
+of subsequent edits. Git records the reviewed changes after that checkpoint.
 The exporter is an allowlist, not a copy of the whole developer directory.
 Only the source snapshot's own root and later reviewed commits may be pushed.
 

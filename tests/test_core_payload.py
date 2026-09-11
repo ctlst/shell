@@ -58,6 +58,25 @@ def test_installed_theme_uses_external_font(staged):
 
 def test_package_map_names_integration_not_upstream_ownership():
     manifest = tomllib.loads((ROOT / "packages/components.toml").read_text())
+    assert set(manifest["package"]) == {"ctlst-shell"}
     core = set(manifest["package"]["ctlst-shell"]["components"])
+    assert {"settings", "notes-widget"} <= core
     assert {"sway-session-config", "waybar-integration", "notification-integration"} <= core
     assert not {"sway", "waybar", "mako", "status-bar"} & core
+
+
+def test_source_snapshot_keeps_only_core_dependency_profiles():
+    assert {p.name for p in (ROOT / "dependencies").iterdir()} == {
+        "arch-runtime.txt", "arch-build.txt", "alpine-runtime.txt", "alpine-build.txt"}
+    for excluded in ("ctlstdialer", "ctlstmessages", "ctlst-smsd", "ctlstfiles",
+                     "ctlstpad", "patches", "fonts", "system", "profiles"):
+        assert not (ROOT / excluded).exists(), excluded
+
+
+def test_functional_fixture_requires_explicit_disposable_vm_flag(tmp_path):
+    result = subprocess.run(
+        ["python3", str(ROOT / "vm/clean-room/functional.py")],
+        cwd=tmp_path, capture_output=True, text=True)
+    assert result.returncode == 2
+    assert "--disposable-vm" in result.stderr
+    assert "ModuleNotFoundError" not in result.stderr

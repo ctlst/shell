@@ -64,6 +64,10 @@ UI regression probes cover the recent Home, drawer, settings, shade, overview
 and companion work, with their individual provider/input limits recorded.
 
 The public snapshot is tested separately: see `release/VALIDATION.md` for its
-exact results. Do not reuse historical green results as acceptance for a changed
+exact results. Current preparation passes 100 source checks (two explicit skips),
+a warning-clean native Arch ARM rebuild and all 20 installed-session checkpoints,
+including wallpaper import, theming and reentry under a fresh VM user. This is
+not a fresh OS-image or package-manager acceptance test.
+Do not reuse historical green results as acceptance for a changed
 release candidate. The older Alpine VM gate currently requires sudo credentials;
 no successful current Alpine rerun is claimed.

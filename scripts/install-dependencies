@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install a declared Alpine/postmarketOS or Arch dependency profile.
+# Install core dependencies only; device/companion profiles live elsewhere.
 set -eu
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -7,7 +7,7 @@ manifest_dir="$root/dependencies"
 profile="${1:-runtime}"
 case "$profile" in
     -h|--help)
-        printf 'usage: %s runtime|phone|build|all (Arch: runtime|build only)\n' "$0"
+        printf 'usage: %s runtime|build (core only)\n' "$0"
         exit 0
         ;;
 esac
@@ -35,17 +35,11 @@ case "$profile" in
     runtime)
         manifests="alpine-runtime.txt"
         ;;
-    phone)
-        manifests="alpine-runtime.txt alpine-phone.txt"
-        ;;
     build)
         manifests="alpine-runtime.txt alpine-build.txt"
         ;;
-    all)
-        manifests="alpine-runtime.txt alpine-build.txt alpine-phone.txt alpine-motion-lab.txt"
-        ;;
     -h|--help)
-        printf 'usage: %s runtime|phone|build|all\n' "$0"
+        printf 'usage: %s runtime|build (core only)\n' "$0"
         exit 0
         ;;
     *)

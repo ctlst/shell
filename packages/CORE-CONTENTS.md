@@ -5,6 +5,34 @@ scripts, documentation and project-created artwork. It is not a repackaged
 Sway distribution. Dependency applications and libraries retain their upstream
 identity and are installed by the operating system, not copied into this package.
 
+## Repository inventory
+
+One source repository and one core build/install target. Separate processes do
+not imply separately installed packages.
+
+| Included component | Language / format | Source location |
+| --- | --- | --- |
+| Home launcher, pages, built-in widgets and widget host | C / GTK4 | `ctlsthome/` |
+| App drawer | Python / GTK4 | `scripts/ctlstdrawer*` |
+| Settings | Python / GTK4 | `scripts/ctlst-settings` |
+| Dock/charm | C / GTK4 | `ctlstdock/` |
+| Multitasking overview | C / GTK4 | `ctlstoverview/` |
+| Quick Settings shade | C / GTK4 | `ctlstshade/` |
+| Swipe-away privacy cover (not a secure lock) | C / GTK4 | `ctlstlock/` |
+| Gesture daemon | C / libinput | `ctlst-gestured/` |
+| Action surface | C / GTK4 | `ctlstaction/` |
+| Login entry, startup, app/task helpers and memory limits | Python + POSIX shell | `session/`, `scripts/` |
+| CTLST Sway configuration, defaults and integration | Sway config, INI, JSON, YAML | `sway/`, `config/defaults/` |
+| Themes, Waybar/Mako styling, original icons and wallpapers | CSS, configuration, SVG, PNG | `themes/`, `wallpapers/`, root SVGs |
+| Notes widget and external-editor launcher | Python + YAML | `scripts/ctlst-home-notes`, `widgets/notes.yaml` |
+| No-recompile widget tools, protocol and examples | Python + NDJSON/YAML documentation | `agent/pi/skills/ctlst-app-builder/`, `examples/` |
+| Builds, core dependency manifests, tests and VM fixtures | Make, shell, Python, C | `Makefile`, `dependencies/`, `tests/`, `vm/` |
+| License, attribution, setup, customization and release evidence | Markdown/text | root documents, `docs/`, `release/` |
+
+The widget-tools path is historical naming, not a bundled agent runtime.
+Fixtures are test source, not prebuilt executables or phone/VM images. The
+component map declares only the package actually present in this repository.
+
 ## Original CTLST work in core
 
 - Home/launcher, drawer, dock/charm, overview, Quick Settings, action surface,

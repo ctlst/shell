@@ -35,8 +35,19 @@ not silently bundled applications. See [what core contains](packages/CORE-CONTEN
 
 Start with a disposable VM or a backed-up, already Sway-capable device:
 
+```sh
+git clone https://github.com/ctlst/shell.git
+cd shell
+```
+
+Read the install guide before running the dependency installer or copying files.
+The GitHub repository name is `shell`; commands and configuration still use
+`ctlst-*` and `~/.config/ctlst/`.
+
 - [Build, stage and start the shell](INSTALL.md)
 - [What works, what is a placeholder, and what remains](BETA.md)
+- [Exact repository contents](packages/CORE-CONTENTS.md)
+- [Remaining release checklist](release/CHECKLIST.md)
 - [Configuration and architecture](docs/ARCHITECTURE.md)
 - [Touch, pointer and keyboard routes](docs/INPUT-PARITY.md)
 - [Create a Home widget without recompiling](docs/WIDGETS.md)

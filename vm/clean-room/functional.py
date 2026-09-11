@@ -9,6 +9,13 @@ import socket
 import stat
 import subprocess
 import time
+import argparse
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--disposable-vm", required=True, action="store_true",
+                    help="confirm an isolated test guest and expendable test user")
+parser.parse_args()  # Refuse before loading GTK or writing any fixture state.
+
 import gi
 gi.require_version("GdkPixbuf", "2.0")
 gi.require_version("Atspi", "2.0")
@@ -109,7 +116,10 @@ def ui_button(name):
         for node in accessible_nodes():
             states = node.get_state_set()
             if node.get_name() == name and all(states.contains(flag) for flag in (
-                    Atspi.StateType.ENABLED, Atspi.StateType.SENSITIVE, Atspi.StateType.SHOWING)):
+                    Atspi.StateType.SENSITIVE, Atspi.StateType.SHOWING)):
+                # GTK4 reports SENSITIVE/SHOWING but may omit ENABLED even
+                # for usable buttons. Keep the busy/hidden guards without
+                # requiring an accessibility state the toolkit does not emit.
                 action = node.get_action_iface()
                 if action and action.get_n_actions():
                     return action.do_action(0)
@@ -375,6 +385,11 @@ def main():
     # Exercise real Settings controls, not a test-only application API.
     ui_button("Wallpaper")
     ui_button("Apply wallpaper")
+    # The packaged wallpaper is already selected on a fresh install. Checking
+    # its ID alone can return before the queued Apply action even starts,
+    # racing the next click against the busy state. Await actual UI completion.
+    wait("Settings finished saving wallpaper", lambda: any(
+        node.get_name() == "Wallpaper saved" for node in accessible_nodes()))
     wait("packaged wallpaper selected", lambda: wallpaper_state()["id"].startswith("packaged:"))
     assert not Path("/usr/bin/ctlst-files").exists(), "optional file app unexpectedly installed"
     imported_source = Path.home() / "test wallpaper import.png"
@@ -382,12 +397,15 @@ def main():
     fixture.fill(0xCC3366FF)
     fixture.savev(str(imported_source), "png", [], [])
     ui_button("Choose from files")
-    time.sleep(0.5)
+    wait("native wallpaper chooser opened", lambda: any(
+        node.get_name() == "Choose wallpaper" for node in accessible_nodes()))
     screenshot("wallpaper-file-chooser")
     key("l", ("ctrl",))
     run("wtype", str(imported_source))
     time.sleep(0.3)
     ui_button("Open")
+    wait("native wallpaper chooser closed", lambda: not any(
+        node.get_name() == "Choose wallpaper" for node in accessible_nodes()))
     # File selection is only a draft; import is an explicit Apply action.
     ui_button("Apply wallpaper")
     wait("file chooser imported wallpaper", lambda: wallpaper_state()["id"].startswith("managed:"))

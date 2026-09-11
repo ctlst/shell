@@ -15,6 +15,8 @@ workspace switching, shade, privacy cover, theme/wallpaper, dotfiles and session
 reentry. It requires real virtual input, wtype/wlrctl, GTK accessibility,
 seatd and the built touch-inject fixture. These are test harness dependencies,
 not extra core providers. Run only in a disposable guest with no active Sway.
+Invoke it as `python3 vm/clean-room/functional.py --disposable-vm`. The required
+flag confirms an expendable test user and guest; do not use your normal account.
 The fixture writes test configuration and restores only its own changes.
 
 The independent native-isolated.py runner is for bounded C fixtures, not the

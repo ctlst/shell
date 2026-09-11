@@ -11,6 +11,8 @@ components = [
   "ctlstoverview",
   "ctlstshade",
   "drawer",
+  "settings",
+  "notes-widget",
   "waybar-integration",
   "workspace-manager",
   "widget-authoring",
@@ -18,28 +20,19 @@ components = [
   "notification-integration",
 ]
 
-[package.ctlst-shell-keyboard]
-required = false
-components = ["keyboard-integration", "wvkbd-swaytouch"]
-
-[package.ctlst-shell-files]
-required = false
-components = ["ctlstfiles", "file-portal"]
-
-[package.ctlst-shell-phone]
-required = false
-components = ["ctlstdialer", "ctlstmessages", "ctlst-smsd", "telephony-adapters"]
-
-[package.ctlst-shell-gamepad]
-required = false
-components = ["ctlstpad", "emulator-integration"]
-
-[package.ctlst-shell-agent-dev]
-required = false
-components = ["agent-builder", "agent-development-harness"]
-
 [excluded]
 components = [
+  "keyboard-integration",
+  "wvkbd-swaytouch",
+  "ctlstfiles",
+  "file-portal",
+  "ctlstdialer",
+  "ctlstmessages",
+  "ctlst-smsd",
+  "telephony-adapters",
+  "ctlstpad",
+  "emulator-integration",
+  "agent-development-harness",
   "bonito-camera-integration",
   "bonito-modem-integration",
   "bonito-audio-integration",
