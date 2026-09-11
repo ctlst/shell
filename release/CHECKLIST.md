@@ -1,39 +1,34 @@
-# Public developer beta checklist
+# Release procedure
 
-Destination: https://github.com/ctlst/shell (public).
-Publish only this clean-root core repository; never push the private extraction
-or Pixel repository history here. No force-push is needed for the initial upload.
+Use this checklist when preparing a source release. Record the tested commit,
+environment, commands, results and limitations in [VALIDATION.md](VALIDATION.md).
 
-## Prepared
+## Source and documentation
 
-- [x] Core-only source and build/install payload; no companion app sources,
-  upstream forks, prebuilt programs, device images or private history.
-- [x] Apache-2.0 license, Vladimir Kovalchuk attribution, dependency/artwork
-  notices, contribution instructions and security boundaries.
-- [x] Component/language inventory, install instructions, dotfile/widget docs,
-  feature/placeholder table and current validation record.
-- [x] Only core runtime/build dependency profiles; no phone/emulator installer.
-- [x] Original Sway configuration remains outside the install payload.
-- [x] Source checks, staged-payload fixture checks and secret scanning performed.
-  Exact results and limits are in VALIDATION.md; these are not hardware tests.
+- Verify the component map, dependency manifests and install target agree.
+- Review source and artifacts for credentials, private data and generated files.
+- Preserve license and attribution notices; document third-party additions.
+- Update installation, configuration, input and platform-support documentation.
+- Check repository links and runnable examples.
+- List unsupported features and security limitations in [BETA.md](../BETA.md).
 
-## Before presenting the candidate as install-validated
+## Build and tests
 
-- [x] Resolve the Settings accessibility/chooser test failures; complete one
-  bounded installed-session run through wallpaper, theme changes and reentry.
-- [x] Record source revision, VM environment and passing/failed results.
-- [x] Review the final staged file list and dependency closure for that revision.
+1. Run `make check` and syntax checks for modified scripts.
+2. Build native components with `-Wall -Wextra -Werror` on the target architecture.
+3. Stage `make install` in an empty directory and review the file list.
+4. Check runtime library resolution and compare installed binaries with the build.
+5. Run the [installed-session tests](../docs/CLEAN-ROOM-VM.md) under a fresh user.
+6. Exercise affected touch, pointer, keyboard, theme, resize and restart behavior.
+7. Report simulated input, physical hardware and package lifecycle results separately.
 
-These checks pass for the documented Arch ARM VM source install. They do not
-establish a new phone installation or stable release. At publication, verify
-the remote has no conflicting work, push only reviewed core commits without
-force, then verify the GitHub tree and README. Do not attach generated phone
-images or private development history.
+## Publication
 
-## Explicitly outside this beta's support promise
+Review the outgoing commits and remote state, push without overwriting unrelated
+work, then verify the published revision, README and artifact contents.
+Source releases must exclude credentials, private configuration, firmware and
+installation-specific device images.
 
-Stock keyboard integration, secure authentication, calendar event providers,
-complete accessibility, other phones, GDM GUI acceptance, distro package
-upgrade/removal and AUR publication remain unfinished. The Alpine VM lane is
-blocked on credentials; no current Alpine acceptance is claimed. No ROM or
-companion applications are being released from this repository.
+A passing source-install test does not validate distro package upgrade/removal
+or all devices. Keep release labels and support claims within the recorded
+test coverage.

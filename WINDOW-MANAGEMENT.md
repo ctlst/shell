@@ -1,32 +1,34 @@
 # Window movement feedback
 
-The gesture daemon remains the authority for dragging/moving a window and
-choosing a drop destination. The Python/GTK4 window-drop-overlay is on-demand,
-input transparent, and never performs a move or close by itself. Existing
-keyboard/compositor window-movement commands remain available independently.
+The gesture daemon owns window movement and destination selection.
+`scripts/window-drop-overlay` is an on-demand Python/GTK4 visual surface:
+it is input-transparent, requests no keyboard focus and executes no move or
+close action itself. Keyboard/compositor movement commands remain independent.
 
-The top row shows nearby workspaces and + for a new workspace; side targets
-move to previous/next workspace. Close window is explicitly labeled at the
-bottom. Selection feedback uses native retained GTK shapes and ellipsized,
-cached Pango text. The full-screen surface never requests keyboard focus.
-Missing or unusual workspace names cannot force its labels beyond the targets.
+## Targets
 
-At least 48px is retained for each workspace target. The daemon sends up to five
-nearby workspaces, fewer when width requires it (four at 320px), centered around
-the focused workspace. The same range and geometry drive both hit testing and
-the visual protocol. The panel stays within the viewport; the overlay must not
-independently shift or reorder targets. Changing these constants requires
-coordinated daemon/overlay changes and tests.
+The top row shows nearby app workspaces and **+** for a new workspace.
+Side targets move to the previous/next workspace. **Close window** is labeled
+separately at the bottom.
 
-Themes use shared semantic colors; selected controls use selected-text and
-danger text is contrast checked. User-supplied danger text is retained when
-readable. T reloads the palette; closing and reopening also reloads. OpenGL is
-the default with an explicit GSK_RENDERER override for diagnostics.
-The portable copy resolves the generated theme directory; Pixel retains its
-separate deployed theme path.
+Targets retain at least 48 logical pixels. The daemon sends up to five nearby
+workspaces, reduced when width requires it; a 320px output fits four plus New.
+The focused workspace determines the range. Hit testing and rendering must use
+the same order and geometry.
 
-Verification: tests/drop-geometry-test.c exercises actual C range selection and
-hit testing for 0–63 tasks, every focus and widths 320–960. Source policy tests
-and the native Python snapshot probe cover captions/cache. The disposable VM
-renders both themes and orientations and verifies pointer/keyboard pass-through.
-This does not certify real drag-to-move/close on a physical touchscreen.
+Changes to target geometry require coordinated updates to the gesture daemon
+and overlay. Do not shift or reorder targets only in the renderer.
+
+## Theme and rendering
+
+The overlay uses retained GTK shapes, ellipsized cached Pango text and shared
+semantic colors. Selected controls use selected-text; danger text is checked
+for contrast. `T` or reopening reloads the palette. OpenGL is the default;
+`GSK_RENDERER` provides a diagnostic override.
+
+## Testing
+
+Run `make check` and test destination ranges, long captions, target bounds,
+pointer/keyboard pass-through and cancelled drags. Use an isolated session
+with expendable windows before testing move/close actions on hardware.
+See [gestures](GESTUREMAP.md) and [VM testing](docs/CLEAN-ROOM-VM.md).

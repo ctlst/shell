@@ -23,3 +23,11 @@ personal paths, copied binaries, credentials or upstream forks to core.
 
 Contributions to original CTLST code use Apache-2.0 with existing notices
 preserved. Identify any third-party origin instead of silently relicensing it.
+
+## Documentation
+
+Write for someone using or extending this repository without its development
+conversation. Explain current behavior, requirements, interfaces and runnable
+examples. Put planned functionality in clearly labeled limitations or proposals.
+Keep personal plans, deployment diaries and unpublished tool paths out of product
+guides. Preserve security warnings and concrete compatibility limits.

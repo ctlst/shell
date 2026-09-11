@@ -1,29 +1,58 @@
-# Core beta VM validation
+# Testing in a disposable VM
 
-Use a disposable Arch ARM VM with unrelated state and a new Unix user whose
-CTLST configuration is absent. Never reset or reuse the Pixel VM or a phone
-image to make a generic install appear to work. First establish an upstream
-Sway baseline; hash /etc/sway/config and preserve it throughout installation.
+Use a disposable Arch ARM VM and a fresh Unix user with no CTLST configuration.
+Keep the test environment separate from daily-use systems and device images.
+Establish a working upstream Sway baseline before installing CTLST, and record
+the hash of `/etc/sway/config`.
 
-Build this source with warnings as errors and stage `make install` into an
-empty directory. Audit the staged paths and dependencies before copying it
-into the disposable guest. Keep access to the VM independently of CTLST.
-See INSTALL.md for the source-install boundary.
+## Build and stage
 
-`vm/clean-room/functional.py` exercises the installed session, bar, drawer,
-workspace switching, shade, privacy cover, theme/wallpaper, dotfiles and session
-reentry. It requires real virtual input, wtype/wlrctl, GTK accessibility,
-seatd and the built touch-inject fixture. These are test harness dependencies,
-not extra core providers. Run only in a disposable guest with no active Sway.
-Invoke it as `python3 vm/clean-room/functional.py --disposable-vm`. The required
-flag confirms an expendable test user and guest; do not use your normal account.
-The fixture writes test configuration and restores only its own changes.
+Follow [INSTALL.md](../INSTALL.md). Build with warnings as errors, stage into an
+empty directory, and inspect the paths and runtime dependencies before copying
+files into the guest. Retain a VM snapshot and SSH/TTY access independent of CTLST.
 
-The independent native-isolated.py runner is for bounded C fixtures, not the
-whole shell portability result. Passing native geometry alone does not prove
-physical input, GPU performance, sensors, suspend or keyboard compatibility.
+## Installed-session test
 
-Current exact results and outstanding gates are in ../release/VALIDATION.md.
-Historical pmOS results are not acceptance of this beta; its current lane is
-blocked on sudo authentication. A fresh user in an existing VM is also not a
-new OS image or a package install/upgrade/uninstall test.
+`vm/clean-room/functional.py` tests startup, the status bar, drawer, task
+switching, Shade, the privacy screen, Settings, wallpaper/theme changes,
+dotfiles, memory limits and logout/login persistence against installed files.
+
+Additional test dependencies include `wtype`, `wlrctl`, `grim`, GTK accessibility,
+seatd and the virtual touchscreen fixture. Compile the fixture in the guest:
+
+```sh
+mkdir -p .build
+cc -O2 -Wall -Wextra -Werror vm/clean-room/touch-inject.c -o .build/touch-inject
+sudo install -D -m 0755 .build/touch-inject /tmp/ctlst-functional/touch-inject
+```
+
+Use an expendable user with input/seat access and a valid `XDG_RUNTIME_DIR`.
+The driver calls the root-owned `/tmp/ctlst-functional/touch-inject` through
+sudo; grant only that fixture the required permissions in the disposable guest.
+Before granting access, verify that the binary and its containing directory are
+root-owned and not writable by the test user, and that neither is a symlink.
+If password-based sudo is used, provide `CTLST_CLEAN_VM_PASSWORD` through the
+test environment. Do not commit credentials or grant broad passwordless access.
+
+From that user's session, with no other Sway process running:
+
+```sh
+dbus-run-session -- python3 vm/clean-room/functional.py --disposable-vm
+```
+
+The required flag acknowledges that the driver writes test configuration,
+creates test files, launches/closes fixture windows and restarts its session.
+Results and screenshots are written to `~/ctlst-functional-results/`.
+Remove temporary input privileges after testing.
+
+## Native fixtures
+
+`vm/clean-room/native-isolated.py --disposable-vm BINARY...` runs compiled
+GTK fixtures in a separate headless Sway session.
+`vm/clean-room/lock-swipe-ui.py --help` lists requirements for the production
+privacy-screen input test.
+
+Native geometry and virtual-input results do not establish physical GPU
+performance, sensor behavior or keyboard-provider compatibility. A fresh user
+in an existing VM does not validate a fresh OS image or package upgrade/removal.
+Record these distinctions in [validation results](../release/VALIDATION.md).

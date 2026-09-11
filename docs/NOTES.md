@@ -1,9 +1,8 @@
 # Notes
 
-Notes is a plain-text Home widget, not a bundled text editor. Its stock helper
+Notes is a plain-text Home widget. Its helper
 is `ctlst-home-notes`, and tapping it launches `dev.ctlst.Notes.desktop` through
-the normal shell app launcher. Existing Notes placement and dimensions survive
-this update. No sample text is written over your notes.
+the shell app launcher. Editing is handled by a separately installed text editor.
 
 By default the preview reads `~/.config/ctlst/notes.txt`. The file is created
 privately only when you first open it for editing. Changes saved by any editor
@@ -28,12 +27,10 @@ the absolute note filename is appended as one argument. A terminal alternative
 is `["foot", "--app-id=dev.ctlst.Notes", "-e", "nvim"]`.
 
 Use `editor = []` for automatic selection: installed graphical text/plain handler,
-then a supported installed GUI editor, then Foot with nano/nvim/vi. On the
-current Pixel, the available fallback is Foot + nvim. Terminal-only MIME handlers
+then a supported installed GUI editor, then Foot with nano/nvim/vi. Terminal-only MIME handlers
 use the explicit Foot fallback, because GIO does not discover Foot itself.
-Install your preferred
-editor separately; none is bundled. Missing editors produce an error, not a
-fake editor window. Preview configuration errors are displayed on the card.
+Install your preferred editor separately. Missing editors produce an error;
+preview configuration errors are displayed on the card.
 
 Config precedence is packaged defaults, sorted profile snippets, `/etc/ctlst`,
 then your dotfile. Editing the file, config, or Python helper needs no Home
@@ -50,11 +47,10 @@ and exit shortcuts are those of their selected editor.
 
 The package installs `/usr/bin/ctlst-home-notes`, the Notes desktop entry and
 `/usr/share/ctlst/widgets/notes.yaml` together. A user descriptor with the same
-ID overrides the stock one: if you copied an old demo descriptor, update its
-`desktop` to `dev.ctlst.Notes.desktop` and `interaction` to `launch` yourself.
-Deployment never replaces a custom descriptor or Home layout.
+ID overrides the packaged one. A custom Notes descriptor should use
+`desktop: dev.ctlst.Notes.desktop` and `interaction: launch` for editor activation.
+Installation preserves custom descriptors and Home layouts.
 
-Regression coverage includes save-to-exact-path, unchanged-frame suppression,
-hidden/show behavior, missing/error states, bounded nonblocking reads, and
-native GTK allocation-to-helper-to-frame reflow in the ARM Arch VM. This does
-not substitute for physical finger/keyboard acceptance with your chosen editor.
+Run `make check` for the included Notes tests: file handling, editor arguments,
+visibility, error states and bounded reads. Test input and save/exit behavior
+with the chosen editor and keyboard provider on the target device.

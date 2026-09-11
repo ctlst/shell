@@ -2,70 +2,64 @@
 
 **Simple defaults. Your phone, your way.**
 
-A small, customizable GTK mobile shell for Linux: a native Home launcher,
-app drawer, task switching, Quick Settings and ordinary editable dotfiles.
-Built on upstream Sway—not a Sway fork, phone ROM or replacement for your
-existing Sway configuration.
+CTLST Shell is a customizable GTK mobile shell for Linux. It provides a Home
+launcher, app drawer, task switching, Quick Settings and an editable
+configuration under `~/.config/ctlst/`. It runs as a separate session on
+upstream Sway and preserves existing Sway configurations.
 
-**Developer beta candidate.** The physical reference is our existing
-**Arch Linux ARM / Pixel 3a XL** setup. Other phones are experimental.
-The privacy screen is **not a secure lock**, and a working on-screen keyboard
-must be supplied separately. Read [beta status](BETA.md) and
-[security boundaries](SECURITY.md) before installing.
+## Status
 
-## What you get
+Developer beta. The reference device is the Pixel 3a XL running Arch Linux ARM.
+Build and installed-session tests also run in an Arch ARM VM. Other devices
+are experimental.
 
-- Home pages, movable/resizable widgets and installed-app launching.
-- Searchable app drawer, dock/charm and workspace overview.
-- GTK Quick Settings and Settings, with accelerated rendering and a recovery
-  renderer override.
-- Basic themes, accents, wallpaper selection and user CSS.
-- A separate CTLST display-manager entry that starts upstream Sway.
-- Dotfiles under `~/.config/ctlst/` and no-compile Python widgets.
+**The privacy screen does not authenticate users and is not a secure lock.**
+Touch-only use requires a separately configured on-screen keyboard.
+See [platform support and limitations](BETA.md) and [security](SECURITY.md).
 
-Home, dock, overview, shade and gesture routing are C. Drawer, Settings,
-widgets and session helpers use Python/shell. GTK, Sway, Waybar, Mako, Foot,
-fonts and other upstream software remain separately installed dependencies.
+## Features
 
-The first public source snapshot is core-only. Phone/SMS, Files, Weather,
-Gamepad, keyboard forks and device integration are separate development lanes,
-not silently bundled applications. See [what core contains](packages/CORE-CONTENTS.md).
+- Home pages with movable apps and resizable widgets.
+- Searchable app drawer, task dock and workspace overview.
+- Quick Settings and Settings with OpenGL rendering.
+- Themes, accent colors, wallpapers and user CSS.
+- A separate display-manager entry that starts Sway.
+- Python widgets that can be added without rebuilding Home.
 
-## Try it and make it yours
+Native surfaces and gesture routing are written in C. The drawer, Settings,
+widget tools and session helpers use Python and shell scripts.
+See the [component inventory](packages/CORE-CONTENTS.md).
 
-Start with a disposable VM or a backed-up, already Sway-capable device:
+## Build and install
 
 ```sh
 git clone https://github.com/ctlst/shell.git
 cd shell
 ```
 
-Read the install guide before running the dependency installer or copying files.
-The GitHub repository name is `shell`; commands and configuration still use
-`ctlst-*` and `~/.config/ctlst/`.
+Follow [INSTALL.md](INSTALL.md) to install dependencies, build and stage the
+package. Source installation is currently intended for disposable VMs and
+development systems; a supported distro package and upgrade/uninstall workflow
+are not available yet.
 
-- [Build, stage and start the shell](INSTALL.md)
-- [What works, what is a placeholder, and what remains](BETA.md)
-- [Exact repository contents](packages/CORE-CONTENTS.md)
-- [Remaining release checklist](release/CHECKLIST.md)
+Sway, GTK, Waybar, Mako, Foot and other [dependencies](docs/DEPENDENCIES.md)
+are installed separately. Phone, messaging and file applications, keyboard
+implementations, kernels and device services are outside this package.
+
+## Documentation
+
 - [Configuration and architecture](docs/ARCHITECTURE.md)
-- [Touch, pointer and keyboard routes](docs/INPUT-PARITY.md)
-- [Create a Home widget without recompiling](docs/WIDGETS.md)
-- [Notes file/editor configuration](docs/NOTES.md)
-- [Design philosophy](docs/PHILOSOPHY.md)
+- [Home layout and widgets](ctlsthome/HOME-V2.md)
+- [Touch, pointer and keyboard controls](docs/INPUT-PARITY.md)
+- [Widget development](docs/WIDGETS.md)
+- [Notes configuration](docs/NOTES.md)
+- [Design principles](docs/PHILOSOPHY.md)
 - [Contributing](CONTRIBUTING.md)
+- [Validation results](release/VALIDATION.md)
 
-There is no certified AUR release, distro upgrade/uninstall path, universal
-phone support or complete calendar integration yet. Passing VM/source tests
-does not make those features complete. Exact candidate checks belong in
-`release/VALIDATION.md`; historical development notes are not release acceptance.
+## License
 
-## Attribution
-
-Created by **Vladimir “Vlad” Kovalchuk**
-([@radmadvlad](https://twitter.com/radmadvlad)). Original CTLST work is
-[Apache-2.0](LICENSE), with attribution in [NOTICE](NOTICE) and dependency/
-artwork boundaries in [THIRD_PARTY.md](THIRD_PARTY.md).
-
-CTLST Shell is still a provisional name. The project is a customizable Linux
-phone foundation, not a mandatory rice or an attempt to bundle every app.
+Copyright 2026 **Vladimir Kovalchuk** ([@radmadvlad](https://twitter.com/radmadvlad)).
+CTLST code is licensed under [Apache-2.0](LICENSE).
+See [NOTICE](NOTICE), [asset and dependency notices](THIRD_PARTY.md) and
+[source provenance](PROVENANCE.md).

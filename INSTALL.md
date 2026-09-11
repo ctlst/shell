@@ -1,15 +1,16 @@
-# Build and try the core beta
+# Build and install
 
 Start with a disposable Arch Linux ARM VM or a backed-up device that already
 runs upstream Sway correctly. CTLST does not provide a kernel, modem, firmware,
 display manager or on-screen keyboard. The reference phone is Pixel 3a XL on
-its existing Arch setup; other devices are experimental. See BETA.md and
+Arch Linux ARM; other devices are experimental. See BETA.md and
 SECURITY.md first. Keep SSH/TTY access and your existing desktop session.
 
 ## Build and inspect
 
 Python 3.11+ is required by source tests. Install `python-pytest` separately to
-run them. Runtime/build dependencies come from the manifests, not bundled copies:
+run them. See the [dependency guide](docs/DEPENDENCIES.md) for package roles.
+The installer reads the runtime/build manifests:
 
 ```sh
 ./scripts/install-dependencies build
@@ -34,14 +35,14 @@ ctlst-session config check
 
 Do not use that copying command as an upgrade/uninstall policy on an important
 system: it has no package database or rollback transaction. Retain the staged
-file list and a VM snapshot. Proper distro packaging is a remaining release gate.
+file list and a VM snapshot. Distro packaging is not currently available.
 
 ## Start and customize
 
 An existing compatible display manager should discover
 `/usr/share/wayland-sessions/ctlst.desktop` as **CTLST Shell**. Selecting it
 starts upstream Sway with CTLST's own generated configuration. The installed
-entry is tested; graphical GDM selection itself is not a certified beta gate.
+entry is tested; graphical GDM selection has not completed validation.
 For an appropriate local graphical/TTY session, `ctlst-session start` is the
 direct entry point; do not start another compositor inside your current one.
 
@@ -63,5 +64,5 @@ out and selecting CTLST again. A plain text editor works too. See
 docs/ARCHITECTURE.md, docs/INPUT-PARITY.md, docs/NOTES.md and docs/WIDGETS.md.
 
 Phone and Messages are unassigned by default; Files uses your external handler.
-Supply the apps/providers you want. Never assume the Pixel's keyboard, sensors,
-audio or power services exist on a fresh installation.
+Install and configure application and device providers separately, including
+the keyboard, sensors, audio and power services required by the target device.

@@ -1,32 +1,36 @@
-# Session and recovery menu
+# Session menu
 
-The modern UI menu remains a lightweight Fuzzel client. Its first page offers
-Exit menu, Lock screen, More options, and installed power actions. More options
-contains Close focused app, Reload configuration, Log out and Suspend where
-available. The Pixel integration keeps its separate touchscreen-recovery,
-compositor-restart and desktop-selection actions.
+The session menu is a Fuzzel client. The first page offers Exit menu, Lock
+screen, More options and available power actions. More options contains Close
+focused app, Reload configuration, Log out and Suspend when supported.
 
-Back returns to the first page. Closing an app, logging out, suspending,
-restarting or powering off requires a second explicit selection. Cancel is
-always first; Escape cancels confirmation and returns to the current page.
-The command is selected from a fixed allowlist, never evaluated as shell text.
-Power privileges and backend policy are unchanged.
+The Lock screen action opens CTLST's unauthenticated privacy cover; it does
+not provide a secure session lock.
 
-## Editable appearance
+## Navigation and confirmation
 
-By default the menu uses the generated palette with Noto Sans 14, 28 character
-width, five visible rows, 44 pixel row height and 12 pixel selection radius.
-Long secondary lists scroll. Navigation is by pointer/touch or Up/Down/Return;
-the Pixel Fuzzel configuration also binds volume and power keys.
+Use pointer/touch or Up/Down/Return. Back returns to the first page.
+Closing an app, logging out, suspending, restarting or powering off requires
+a second selection. Cancel is first; Escape cancels confirmation.
 
-For full appearance control, copy the generated Fuzzel configuration:
+Commands come from a fixed allowlist and are not evaluated as shell text.
+Available actions depend on installed providers and system permissions.
+
+## Appearance
+
+Defaults use the generated palette, Noto Sans 14, a 28-character width,
+five visible rows, 44px row height and 12px selection radius.
+Long lists scroll.
+
+For a complete Fuzzel override, copy the generated configuration to
+`~/.config/ctlst/session-menu.ini`, respecting `XDG_CONFIG_HOME`:
 
 ```sh
 cp "$XDG_RUNTIME_DIR/ctlst-shell/generated/fuzzel.ini" \
-   "${XDG_CONFIG_HOME:-$HOME/.config}/ctlst/session-menu.ini"
+   "$HOME/.config/ctlst/session-menu.ini"
 ```
 
-Edit the ordinary INI file, for example:
+Then edit, for example:
 
 ```ini
 [main]
@@ -36,16 +40,14 @@ lines=5
 line-height=44
 ```
 
-When that file exists, the menu does not override its geometry or typography.
-Keep the copied colors/key-bindings sections, or customize them too. The file
-is read on each menu opening and is never overwritten by a theme update;
-its colors are now user-owned. Remove/rename it to resume generated styling.
-This is a whole-file Fuzzel override, not a new layered session INI scope.
+Retain or customize the colors/key-bindings sections. The file is read whenever
+the menu opens and is not overwritten by theme updates. Rename/remove it to
+resume generated styling. This is a whole-file override, not a layered CTLST
+INI scope.
 
-Pixel integration uses `~/.config/sway-touch/session-menu.ini` instead,
-copied from its adjacent `fuzzel.ini`.
+## Diagnostics
 
-`session-menu --list-actions` and `--resolve "Action"` remain read-only
-diagnostic interfaces. The full flat action list is not the first UI page.
-Tests use inert providers for every power command; the VM UI probe opens
-Reboot confirmation and cancels it, never reboots the guest.
+`/usr/libexec/ctlst-shell/session-menu --list-actions` and
+`--resolve "Action"` inspect action availability without executing it.
+Test confirmation paths with inert providers and cancel before invoking
+real power actions.

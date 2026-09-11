@@ -1,17 +1,13 @@
-# Source snapshot provenance
+# Source provenance
 
-CTLST Shell originated in Vladimir Kovalchuk's Pixel 3a XL development project.
-The private standalone extraction retained experimental history; the first
-public core snapshot deliberately starts a new Git root without that history.
-This preserves the private development record without publishing historical
-binaries, device utilities, keyboard forks or personal screenshots.
+CTLST Shell was originally developed for an Arch Linux ARM installation on the
+Pixel 3a XL. This repository contains the standalone shell source; device
+integration, firmware and keyboard forks are maintained separately.
 
-release/source-files.json records the SHA-256 of each source input at the initial
-export (root commit 1c8419e). It is a historical extraction record, not a manifest
-of subsequent edits. Git records the reviewed changes after that checkpoint.
-The exporter is an allowlist, not a copy of the whole developer directory.
-Only the source snapshot's own root and later reviewed commits may be pushed.
+The source history begins at commit `1c8419e`.
+`release/source-files.json` records SHA-256 hashes of the files imported in
+that commit. It is an import record, not a checksum manifest for later versions.
+Use Git commits and release references to identify subsequent changes.
 
-Original CTLST work is Apache-2.0, copyright 2026 Vladimir Kovalchuk. Upstream
-dependencies remain separately installed and attributed; see THIRD_PARTY.md.
-The Pixel production deployment and this portable snapshot are separate lanes.
+CTLST code is Apache-2.0, copyright 2026 Vladimir Kovalchuk.
+[THIRD_PARTY.md](THIRD_PARTY.md) documents external dependencies and artwork.

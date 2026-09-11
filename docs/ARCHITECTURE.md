@@ -16,8 +16,8 @@ display manager
         -> optional keyboard, phone, files, and lifecycle capabilities
 ```
 
-The generated entrypoint only establishes deterministic includes. It is not a
-second opaque settings database.
+The generated entrypoint establishes deterministic configuration includes.
+Edit source dotfiles rather than generated files.
 
 ## Configuration locations
 
@@ -52,10 +52,10 @@ precedence:
 
 ## Inspectability
 
-The intended command behavior is deliberately Unix-like:
+Use the session command to inspect and edit configuration:
 
-- `ctlst-session config show memory` prints the user's `memory.conf`, like a
-  labeled `cat`; it says clearly when the file does not exist.
+- `ctlst-session config show memory` prints the user's `memory.conf` and reports
+  when the file does not exist.
 - `ctlst-session config paths` prints the complete load order.
 - `ctlst-session config effective memory` prints resolved concrete values and
   the origin of each value.
@@ -83,9 +83,9 @@ memory_high_bytes = 67108864
 memory_max_bytes = 134217728
 ```
 
-These small values are test examples, not a recommended phone policy. Keep the
-generic zero defaults unless you deliberately want limits. Effective output
-reports the origin of every resolved key; no preset name hides the byte amounts.
+These values illustrate configuration syntax; choose limits appropriate to the
+application workload. Zero is the default and adds no CTLST limit. Effective
+output reports each resolved value and its origin.
 
 ## Profiles and capabilities
 
@@ -174,4 +174,4 @@ when loading the stylesheet. To recover, fix or rename your override and run
 This styles GTK nodes in CTLST consumers of the generated theme. It does not
 restyle unrelated apps, change Waybar (`bar-style.css`), or change geometry and
 colors painted directly by custom GSK code. Those retain their own documented
-configuration and theme tokens. Full user theme catalogs are separate work.
+configuration and theme tokens. User theme catalogs are not currently supported.

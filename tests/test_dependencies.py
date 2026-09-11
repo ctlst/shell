@@ -111,13 +111,14 @@ def test_dependency_installer_consumes_the_manifests():
         assert name in source
 
 
-def test_clean_room_gate_does_not_claim_the_pixel_vm_is_portable():
+def test_vm_guide_documents_isolation_and_coverage():
     contract = (ROOT / "docs" / "CLEAN-ROOM-VM.md").read_text(encoding="utf-8")
 
-    assert "unrelated state" in contract
-    assert "Never reset or reuse the Pixel VM" in contract
+    assert "disposable Arch ARM VM" in contract
+    assert "fresh Unix user" in contract
     assert "baseline" in contract
-    assert "shell portability result" in contract
+    assert "--disposable-vm" in contract
+    assert "does not validate a fresh OS image or package upgrade/removal" in contract
 
 def test_vendored_status_font_records_provenance_and_license():
     if not (ROOT / "fonts").exists():

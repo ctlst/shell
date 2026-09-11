@@ -1,23 +1,29 @@
-# CTLST action fan
+# Action feedback surface
 
-C/GTK4 passive visual feedback for the gesture daemon's bottom-right action
-fan. The daemon owns target selection, gesture release and the actual Gamepad,
-Keyboard and Close window actions; this surface never executes them.
+`ctlstaction` is a C/GTK4 layer-shell surface for the gesture daemon's action
+fan. It displays Keyboard, Gamepad and Close window targets. Optional actions
+require their corresponding providers.
 
-The modern UI branch uses rounded GTK snapshot nodes and cached Pango captions,
-not a per-frame Cairo canvas. Each selected action has a readable name and
-accessible description. Icons are CTLST-drawn primitives, not Apple assets.
-The original three target centers are unchanged; the selected ring and caption
-are feedback, not additional hit regions. The entire surface remains input
-transparent and does not request keyboard focus.
+The gesture daemon selects targets and executes actions. This surface is
+input-transparent and does not request keyboard focus. Its selected ring and
+caption provide feedback, not additional hit regions.
 
-Theme ACTION_* roles remain editable through the shared theme pipeline.
-Missing roles inherit semantic shell colors; explicitly authored roles are
-preserved. Reload sends R or opens the fan again. OpenGL is the default unless
-GSK_RENDERER is explicitly set for diagnosis.
+Rendering uses retained GTK rounded nodes and cached Pango captions.
+OpenGL is the default; an explicit `GSK_RENDERER` override is respected.
+The icons are CTLST-drawn primitives.
 
-Build with make (GTK4/layer-shell; warnings as errors). The native
-tests/action-render-test.c covers all targets and morph frames at 320–960px,
-bounds and retained captions. The portable overlay VM probe checks light/dark
-renders and keyboard/pointer pass-through without executing any action.
-Physical touch/GPU and optional keyboard/gamepad providers remain separate QA.
+## Theme and control
+
+`ACTION_*` roles use the shared theme pipeline. Missing roles inherit semantic
+shell colors; explicitly configured values take precedence. The `R` control
+message or reopening the surface reloads the palette.
+
+## Development
+
+Build with `make` in this directory, or `make core` from the repository root.
+GTK4 and gtk4-layer-shell are required; warnings are treated as errors.
+
+Verify target alignment with the gesture daemon, cancellation, caption bounds
+and input pass-through at the supported output sizes. Hardware providers and
+physical input require separate tests. See [gestures](../GESTUREMAP.md) and
+[VM testing](../docs/CLEAN-ROOM-VM.md).

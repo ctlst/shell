@@ -1,62 +1,35 @@
-# Optional embedded agent panel
+# Experimental embedded agent panel
 
-This is the retained Pocket Agent surface inside Home, enabled only by the
-existing `CTLST_LEGACY_AGENT=1` launch environment. It is **off by default**
-and is not a mandatory agent service or a new core package dependency.
-The optional terminal-based developer agent remains a separate workflow.
+Home contains an experimental frontend enabled by `CTLST_LEGACY_AGENT=1`.
+It is disabled by default. This repository does not install a supported agent
+backend or model service; enabling the frontend alone does not provide one.
 
-## Modern-UI prototype
+## Frontend behavior
 
-The header groups identity and status; an activity indicator runs only while
-a request is pending. Ask stays next to the prompt. Replies are complete,
-selectable, wrapping text in a kinetic scroller rather than a two-line excerpt.
-The scroller contains the quoted question, response, suggestions and any
-proposed action; it cannot enlarge the surrounding panel. Suggestions wrap
-into rows at narrow widths. Buttons have a 44px minimum height.
+The panel provides a prompt, Ask action, selectable scrolling responses and
+suggestion buttons. Enter in the prompt submits a request. Native GTK controls
+support pointer and keyboard activation.
 
-The quiet semantic card protects text from wallpaper/decorative visual noise.
-Existing At a glance / Signal / Bloom selection is retained behind it and is
-deliberately subdued. The palette still comes from the session's generated
-theme; Ask and Run use the selected-text contrast role.
+Busy requests disable duplicate submissions. Failed requests preserve the
+question for retry and restore controls. Successful requests clear the prompt.
+Moving focus out of the prompt releases text-entry ownership while retaining
+panel navigation focus.
 
-A proposed action has its own wrapping description and separate Cancel action
-and Run action buttons. The button label is not model-generated. The frontend
-stores the `action_id` accompanying that description and passes that exact
-token to `ctlst-agent confirm TOKEN` or `cancel TOKEN`; it never relies on
-another client's mutable pending-action file. Missing/malformed tokens cannot
-enable Run. Starting another question or consuming an action discards the old
-displayed token. The broker's allowlist, execution tiers, confirmation policy
-and expiry rules are unchanged. This redesign does not authorize new actions.
+## Action interface
 
-Busy requests disable duplicate submissions. Missing helpers and failed
-responses restore controls, stop the indicator and preserve the typed question
-for correction/retry. Only a successful Ask clears it. Failed action requests
-do not silently retry, and their displayed confirmation token is discarded.
+Proposed actions include a description and separate Run/Cancel controls.
+The frontend stores the displayed `action_id` and passes that exact token to
+`ctlst-agent confirm TOKEN` or `ctlst-agent cancel TOKEN`.
+Missing or malformed tokens disable Run. A new question, consumed action or
+failed action request discards the token; action requests are not retried
+automatically.
 
-## Input and configuration boundaries
+This frontend is not an authorization boundary. Any backend must independently
+validate requests, apply its execution policy and enforce confirmation expiry.
 
-The native prompt supports Enter to Ask; other controls use native GTK
-activation. Moving focus from text entry to an agent response/control clears
-the text-input ownership marker but keeps keyboard navigation in the panel.
-Leaving Home or locking still releases prompt ownership through the existing
-session path. Broker/client and keyboard-provider integration must be tested
-separately; an inert callback test is not physical keyboard acceptance.
+## Limitations
 
-No new configuration format was introduced. Enablement and the inherited
-portrait-first visibility behavior still belong to the legacy launch path;
-landscape activation, full Home/grid integration, current-provider typing and
-decorative GL modes remain acceptance work. A first-class dotfile enablement
-option or extraction into a standalone companion should be decided explicitly,
-not quietly installed by an appearance change.
-
-## Evidence
-
-The portable `tests/home-agent-test.c` builds the actual native content and
-runs a temporary inert helper, without launching a broker, model, network,
-call or SMS action. It checks 300–936px content widths at a 220px panel height,
-scrolling, missing-helper/malformed-response recovery and exact Run/Cancel
-arguments. `vm/clean-room/agent-ui.py` captures that content in light/dark
-themes in a disposable ARM VM. These are content/adapter checks in an inert
-host, **not full Home, keyboard-provider, GL-performance or release acceptance**.
-Source contracts live in `tests/test_home_agent_ui.py`; both repository
-variants retain their intended client/theme path differences.
+There is no supported dotfile enablement interface, complete landscape/Home-grid
+integration or validated keyboard-provider workflow for this panel. Decorative
+rendering modes and full-session behavior are experimental. Keep the default
+disabled for ordinary shell installations.

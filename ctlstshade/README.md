@@ -1,49 +1,44 @@
 # Quick Settings and notifications
 
-Swipe up to close when content already fits or the viewport is at the bottom.
-When more content remains below, the swipe scrolls instead; a fresh swipe at
-the bottom closes. Brightness retains its own drag, and horizontal notification
-swipes remain row actions. Close and Escape still dismiss without scrolling.
-The focused native regression is `shade-primary-test.c --gestures`, driven by
-the portable `vm/clean-room/shade-dismiss-ui.py` in an isolated ARM VM.
+`ctlstshade` is a resident C/GTK4 layer-shell surface. It covers the full output
+when open and provides system controls, details and notification actions.
 
-Secondary actions (screen timeout, Tailscale, Capture and Settings) now use
-the same balanced native layout as the primary controls. Their complete labels
-wrap instead of competing for four fixed columns; defaults use two columns on
-narrow screens. `window#ctlstshade .shade-utilities > *` exposes the same
-120px content minimum and 4px margins to ordinary CSS. Headings, rotation text
-and network/provider names wrap without forcing the shade wider than the
-output. Provider operations and gesture/brightness handling are unchanged.
+## Input
 
-The native fixture seeds long network names and real unavailable/timeout
-labels. Its 320px root-width regression fails the earlier source with a 622px
-minimum. The extended VM driver also checks keyboard scrolling to Settings
-at every size, then pointer/touch/Return activation through inert callbacks.
-This secondary-control follow-up is source/VM work, not a phone deployment.
+- Pull down from the top edge, activate the status-bar control or press `Super+A`.
+- Swipe up to dismiss when content fits or the viewport is already at its bottom.
+  A swipe that reaches the bottom only scrolls; the next swipe can dismiss.
+- Brightness drags remain slider-owned. Horizontal notification swipes remain row actions.
+- Close and the header/handle provide pointer/touch dismissal.
+- Escape returns from a detail page, then dismisses the shade.
+- Wi-Fi, Bluetooth and Sound have separate toggle and detail buttons.
+  Tab/Enter/Space activates the same controls; arrow keys adjust brightness.
 
-Native resident GTK4 layer-shell surface. The four primary controls use
-balanced one-, two- or four-column rows from their native natural requests,
-including CSS and fonts. Defaults fit two columns at 320px and four at 640px;
-larger text or custom controls can reduce the count. Brightness follows this
-group, before rotation and secondary controls. Short screens scroll, and
-reallocation retains the same widgets and focus.
+Keyboard ownership begins when the shade opens and ends when it hides.
+A partial pull preview does not take keys from the active application.
 
-Wi-Fi/Bluetooth/Sound main buttons toggle; separate 44px detail buttons open
-their pages. Existing long-press details remain. Pointer/touch and Tab/Return
-reach the same native buttons; brightness retains native arrow-key adjustment.
-Content scrolling and the established close/Back routes are unchanged.
+## Layout and styling
 
-Ordinary theme CSS controls `window#ctlstshade .shade-primary > *` (120px
-content minimum, 4px margins), `.shade-control-tile`, `.shade-control-detail`
-and `.shade-slider`. Use `$XDG_CONFIG_HOME/ctlst/theme-style.css` (normally
-`~/.config/ctlst/theme-style.css`) and `ctlst-session reload`. No new daemon, configuration format, dependency
-or Pixel orientation assumption was introduced. Styling needs no rebuild.
+Primary controls reflow into balanced one-, two- or four-column rows based on
+available width, fonts and CSS. Defaults fit two columns at 320 logical pixels
+and four at 640. Brightness follows the primary group. Secondary controls wrap
+their full labels, and short outputs scroll without replacing focused widgets.
 
-`tests/shade-primary-test.c` hosts the actual UI with external callbacks
-disconnected. Compile with `-O2 -Wall -Wextra -Werror`, GTK4,
-gtk4-layer-shell and libm. Run `vm/clean-room/shade-primary-ui.py` with
-`--disposable-vm --binary PATH --components themes/components.css
---touch-inject PATH`. It checks both palettes, normal/24px labels, 320–960px
-bounds, default brightness placement and separate pointer/touch/keyboard
-toggle/detail activation. It never toggles radios or writes a backlight.
-Production session and physical GPU/hardware acceptance are separate checks.
+Override `~/.config/ctlst/theme-style.css` and run `ctlst-session reload`:
+
+- `window#ctlstshade .shade-primary > *` and `.shade-utilities > *`:
+  120px content minimum and 4px margins.
+- `.shade-control-tile` and `.shade-control-detail`: control styling.
+- `.shade-slider`: brightness styling.
+
+Device names and status labels wrap to avoid widening the output.
+Unavailable providers display an unavailable state; the relevant controls do
+not perform a successful-looking no-op.
+
+## Development
+
+Build with `make` in this directory or `make core` from the repository root.
+Run `make check` and the [installed-session tests](../docs/CLEAN-ROOM-VM.md).
+For layout changes, test narrow and short outputs, larger text, scrolling,
+toggle/detail separation and brightness gesture ownership. Validate actual
+radio/backlight behavior only on an explicitly configured test device.
