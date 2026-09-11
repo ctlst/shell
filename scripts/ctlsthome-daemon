@@ -1,0 +1,101 @@
+#!/bin/sh
+# Keep ctlsthome alive across crashes. Same pattern as waybar-daemon:
+# one supervisor loop, restart child while the Sway session socket lives.
+set -eu
+
+runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+pid_file="$runtime_dir/ctlst-home-daemon.pid"
+libexec_dir="${CTLST_LIBEXEC_DIR:-$HOME/.local/share/sway-touch/scripts}"
+home_bin="${CTLSTHOME_BIN:-/usr/bin/ctlsthome}"
+[ -x "$home_bin" ] || home_bin="$HOME/.local/bin/ctlsthome"
+child_pid=
+
+daemon_is_running()
+{
+	[ -s "$pid_file" ] || return 1
+	IFS= read -r daemon_pid <"$pid_file" || return 1
+	[ -n "$daemon_pid" ] && kill -0 "$daemon_pid" 2>/dev/null
+}
+
+start_daemon()
+{
+	daemon_is_running && return 0
+	rm -f "$pid_file"
+	if [ -n "${SWAYSOCK:-}" ] && [ -S "${SWAYSOCK}" ]; then
+		swaymsg exec "$libexec_dir/ctlsthome-daemon daemon" >/dev/null
+	else
+		"$libexec_dir/ctlsthome-daemon" daemon &
+	fi
+}
+
+cleanup()
+{
+	trap - EXIT INT TERM HUP
+	if [ -n "$child_pid" ]; then
+		kill "$child_pid" 2>/dev/null || true
+		wait "$child_pid" 2>/dev/null || true
+	fi
+	if [ -s "$pid_file" ] &&
+		[ "$(cat "$pid_file" 2>/dev/null || true)" = "$$" ]; then
+		rm -f "$pid_file"
+	fi
+	exit 0
+}
+
+load_session_env()
+{
+	if [ -r "$runtime_dir/sway-touch/session.env" ]; then
+		# shellcheck disable=SC1090
+		set -a
+		. "$runtime_dir/sway-touch/session.env"
+		set +a
+	fi
+}
+
+run_daemon()
+{
+	daemon_is_running && exit 0
+	printf '%s\n' "$$" >"$pid_file"
+	trap cleanup EXIT INT TERM HUP
+	load_session_env
+
+	while [ -n "${SWAYSOCK:-}" ] && [ -S "$SWAYSOCK" ]; do
+		if [ ! -x "$home_bin" ]; then
+			sleep 2
+			continue
+		fi
+		# Avoid stacking if something else already started home.
+		if pgrep -x ctlsthome >/dev/null 2>&1; then
+			sleep 2
+			continue
+		fi
+		GSK_RENDERER="${GSK_RENDERER:-gl}" "$home_bin" &
+		child_pid=$!
+		wait "$child_pid" 2>/dev/null || true
+		child_pid=
+		[ -S "${SWAYSOCK:-}" ] || break
+		# Brief back-off so a crash loop does not peg the CPU.
+		sleep 1
+	done
+}
+
+case "${1:-daemon}" in
+	daemon)
+		run_daemon
+		;;
+	ensure)
+		start_daemon
+		;;
+	restart)
+		pkill -x ctlsthome 2>/dev/null || true
+		if [ -s "$pid_file" ]; then
+			kill "$(cat "$pid_file")" 2>/dev/null || true
+			rm -f "$pid_file"
+		fi
+		start_daemon
+		;;
+	*)
+		printf 'usage: ctlsthome-daemon daemon|ensure|restart\n' >&2
+		exit 2
+		;;
+esac

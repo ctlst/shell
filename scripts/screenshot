@@ -1,0 +1,19 @@
+#!/bin/sh
+set -eu
+
+dir="$HOME/Pictures/Screenshots"
+stamp="$(date +%Y-%m-%d_%H-%M-%S)"
+file="$dir/$stamp.png"
+mkdir -p "$dir"
+
+suffix=1
+while [ -e "$file" ]; do
+    file="$dir/${stamp}_$suffix.png"
+    suffix=$((suffix + 1))
+done
+
+grim "$file"
+if command -v notify-send >/dev/null 2>&1; then
+    notify-send "Screenshot saved" "$file" || true
+fi
+printf '%s\n' "$file"

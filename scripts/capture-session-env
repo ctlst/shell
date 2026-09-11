@@ -1,0 +1,40 @@
+#!/bin/sh
+set -eu
+
+runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+state_dir="$runtime_dir/sway-touch"
+env_file="$state_dir/session.env"
+tmp_file="$env_file.tmp.$$"
+manager_bus="unix:path=$runtime_dir/bus"
+
+mkdir -p "$state_dir"
+umask 077
+
+{
+    printf 'DBUS_SESSION_BUS_ADDRESS=%s\n' "${DBUS_SESSION_BUS_ADDRESS:-}"
+    printf 'WAYLAND_DISPLAY=%s\n' "${WAYLAND_DISPLAY:-}"
+    printf 'SWAYSOCK=%s\n' "${SWAYSOCK:-}"
+    printf 'XDG_RUNTIME_DIR=%s\n' "$runtime_dir"
+} >"$tmp_file"
+
+mv "$tmp_file" "$env_file"
+
+# Keep an already-running private session usable during upgrades, then update
+# the canonical systemd user bus used by portals and scoped applications.
+dbus-update-activation-environment \
+    DISPLAY \
+    WAYLAND_DISPLAY \
+    SWAYSOCK \
+    XDG_CURRENT_DESKTOP \
+    XDG_SESSION_DESKTOP \
+    XDG_SESSION_TYPE
+env DBUS_SESSION_BUS_ADDRESS="$manager_bus" \
+    dbus-update-activation-environment --systemd \
+        DISPLAY \
+        WAYLAND_DISPLAY \
+        SWAYSOCK \
+        XDG_CURRENT_DESKTOP \
+        XDG_SESSION_DESKTOP \
+        XDG_SESSION_TYPE
+env DBUS_SESSION_BUS_ADDRESS="$manager_bus" \
+    systemctl --user start ctlst-sway-touch-session.target

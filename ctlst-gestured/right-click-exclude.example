@@ -1,0 +1,11 @@
+# One case-insensitive app-id glob per line. This file is copied to
+# ~/.config/sway-touch/right-click-exclude and read for every new hold.
+# Remove a line to enable hold-for-right-click in that application.
+dev.ctlst.*
+waydroid.*
+*camera*
+*dolphin*
+*gamescope*
+*retroarch*
+*steam*
+wvkbd*

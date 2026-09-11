@@ -1,0 +1,34 @@
+#!/bin/sh
+set -eu
+
+runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+socket_path="$runtime_dir/ctlst-shade.sock"
+shade_bin="${CTLST_SHADE_BIN:-/usr/bin/ctlstshade}"
+[ -x "$shade_bin" ] || shade_bin="$HOME/.local/bin/ctlstshade"
+
+case "${1:-show}" in
+    show) command=S ;;
+    wifi) command=W ;;
+    bluetooth) command=B ;;
+    wifi-details) command=D ;;
+    bluetooth-device) command=P ;;
+    notifications) command=N ;;
+    hide) command=H ;;
+    *)
+        printf 'usage: ctlstshade {show|wifi|wifi-details|bluetooth|bluetooth-device|notifications|hide}\n' >&2
+        exit 2
+        ;;
+esac
+
+if [ ! -S "$socket_path" ]; then
+    [ "$command" = H ] && exit 0
+    swaymsg exec "$shade_bin" >/dev/null
+    tries=0
+    while [ ! -S "$socket_path" ] && [ "$tries" -lt 40 ]; do
+        sleep 0.05
+        tries=$((tries + 1))
+    done
+fi
+
+[ -S "$socket_path" ] || exit 1
+printf '%s' "$command" | socat - "UNIX-SENDTO:$socket_path"

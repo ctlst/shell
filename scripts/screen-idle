@@ -1,0 +1,132 @@
+#!/bin/sh
+set -eu
+
+runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+config_dir="${CTLST_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/ctlst}"
+setting_file="$config_dir/screen-idle-seconds"
+pid_file="$runtime_dir/sway-touch-screen-idle.pid"
+inhibit_file="$runtime_dir/sway-touch-screen-idle.inhibited"
+log_file="$runtime_dir/sway-touch-screen-idle.log"
+self="${CTLST_LIBEXEC_DIR:-/usr/libexec/ctlst-shell}/screen-idle"
+lock="${CTLST_LIBEXEC_DIR:-/usr/libexec/ctlst-shell}/ctlstlock"
+default_seconds=300
+
+read_seconds() {
+    seconds="$(sed -n '1p' "$setting_file" 2>/dev/null || true)"
+    case "$seconds" in
+        0|60|120|300|600|1800) printf '%s\n' "$seconds" ;;
+        *) printf '%s\n' "$default_seconds" ;;
+    esac
+}
+
+label_for_seconds() {
+    case "$1" in
+        0) printf '%s\n' "Screen timeout off" ;;
+        60) printf '%s\n' "Screen 1 min" ;;
+        120) printf '%s\n' "Screen 2 min" ;;
+        300) printf '%s\n' "Screen 5 min" ;;
+        600) printf '%s\n' "Screen 10 min" ;;
+        1800) printf '%s\n' "Screen 30 min" ;;
+    esac
+}
+
+stop_daemon() {
+    if [ -s "$pid_file" ]; then
+        pid="$(cat "$pid_file")"
+        if [ "$(cat "/proc/$pid/comm" 2>/dev/null || true)" = swayidle ]; then
+            kill "$pid" 2>/dev/null || true
+        fi
+    fi
+    rm -f "$pid_file"
+}
+
+start_daemon() {
+    stop_daemon
+    seconds="$(read_seconds)"
+    [ "$seconds" -ne 0 ] || return 0
+    [ ! -e "$inhibit_file" ] || return 0
+
+    swayidle -w \
+        timeout "$seconds" "$self blank" \
+        resume "$self wake" \
+        >>"$log_file" 2>&1 &
+    printf '%s\n' "$!" >"$pid_file"
+}
+
+case "${1:-status}" in
+    start)
+        mkdir -p "$config_dir"
+        [ -s "$setting_file" ] ||
+            printf '%s\n' "$default_seconds" >"$setting_file"
+        start_daemon
+        ;;
+    stop)
+        stop_daemon
+        ;;
+    status)
+        label_for_seconds "$(read_seconds)"
+        ;;
+    cycle)
+        mkdir -p "$config_dir"
+        case "$(read_seconds)" in
+            0) next=60 ;;
+            60) next=120 ;;
+            120) next=300 ;;
+            300) next=600 ;;
+            600) next=1800 ;;
+            *) next=0 ;;
+        esac
+        printf '%s\n' "$next" >"$setting_file"
+        start_daemon
+        label_for_seconds "$next"
+        ;;
+    set)
+        case "${2:-}" in
+            0|60|120|300|600|1800) ;;
+            *)
+                printf 'usage: screen-idle set {0|60|120|300|600|1800}\n' >&2
+                exit 2
+                ;;
+        esac
+        mkdir -p "$config_dir"
+        printf '%s\n' "$2" >"$setting_file"
+        start_daemon
+        label_for_seconds "$2"
+        ;;
+    blank)
+        "$lock" lock
+        swaymsg output DSI-1 power off >/dev/null
+        ;;
+    wake)
+        swaymsg output DSI-1 power on >/dev/null
+        ;;
+    inhibit)
+        case "${2:-}" in
+            on)
+                reason="${3:-focused app}"
+                printf '%s\n' "$reason" >"$inhibit_file"
+                stop_daemon
+                ;;
+            off)
+                rm -f "$inhibit_file"
+                start_daemon
+                ;;
+            status)
+                if [ -s "$inhibit_file" ]; then
+                    printf 'Screen timeout paused: %s\n' \
+                        "$(sed -n '1p' "$inhibit_file")"
+                else
+                    printf '%s\n' "Screen timeout active"
+                fi
+                ;;
+            *)
+                printf 'usage: screen-idle inhibit {on [reason]|off|status}\n' >&2
+                exit 2
+                ;;
+        esac
+        ;;
+    *)
+        printf 'usage: screen-idle {start|stop|status|cycle|set|blank|wake|inhibit}\n' >&2
+        exit 2
+        ;;
+esac

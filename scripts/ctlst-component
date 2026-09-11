@@ -1,0 +1,12 @@
+#!/usr/bin/env python3
+"""Start a component with validated settings from the same resolver."""
+import os
+import shutil
+import sys
+from ctlst_config import component_environment
+
+environment = component_environment()
+program = shutil.which(sys.argv[1])
+if program is None:
+    raise SystemExit(f"component not installed: {sys.argv[1]}")
+os.execvpe(program, sys.argv[1:], environment)

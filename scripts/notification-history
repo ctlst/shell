@@ -1,0 +1,507 @@
+#!/usr/bin/env python3
+
+import base64
+import json
+import os
+import re
+import socket
+import sqlite3
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+TRANSIENT_CATEGORIES = {
+    "x-kde.incoming-call",
+    "x-ctlst.incoming-call",
+    "x-ctlst.active-call",
+}
+
+
+def database_path():
+    override = os.environ.get("CTLST_NOTIFICATION_DB")
+    if override:
+        return Path(override)
+    state = Path(
+        os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")
+    )
+    return state / "ctlst" / "notifications.sqlite"
+
+
+def open_database():
+    path = database_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    database = sqlite3.connect(path)
+    database.row_factory = sqlite3.Row
+    database.executescript(
+        """
+        PRAGMA journal_mode=WAL;
+        CREATE TABLE IF NOT EXISTS notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            mako_instance TEXT NOT NULL,
+            mako_id INTEGER NOT NULL,
+            app_name TEXT NOT NULL DEFAULT '',
+            summary TEXT NOT NULL DEFAULT '',
+            body TEXT NOT NULL DEFAULT '',
+            category TEXT NOT NULL DEFAULT '',
+            desktop_entry TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            dismissed INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(mako_instance, mako_id)
+        );
+        CREATE INDEX IF NOT EXISTS notifications_visible
+            ON notifications(dismissed, updated_at DESC);
+        """
+    )
+    return database
+
+
+def mako_json(command):
+    try:
+        result = subprocess.run(
+            ["makoctl", command, "-j"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        value = json.loads(result.stdout)
+        return value if isinstance(value, list) else []
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        return []
+
+
+def mako_instance():
+    try:
+        result = subprocess.run(
+            ["pgrep", "-n", "-x", "mako"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        pid = int(result.stdout.strip())
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
+        return f"{pid}:{stat.rsplit(')', 1)[1].split()[19]}"
+    except (OSError, ValueError, subprocess.SubprocessError, IndexError):
+        return "unknown"
+
+
+def item_text(item, key):
+    value = item.get(key)
+    return "" if value is None else str(value)
+
+
+def store_item(database, instance, item, active):
+    category = item_text(item, "category")
+    if category in TRANSIENT_CATEGORIES:
+        return
+    try:
+        mako_id = int(item.get("id", 0))
+    except (TypeError, ValueError):
+        return
+    if mako_id <= 0:
+        return
+    now = int(time.time())
+    existing = database.execute(
+        "SELECT id, dismissed FROM notifications "
+        "WHERE mako_instance = ? AND mako_id = ?",
+        (instance, mako_id),
+    ).fetchone()
+    values = (
+        item_text(item, "app_name"),
+        item_text(item, "summary"),
+        item_text(item, "body"),
+        category,
+        item_text(item, "desktop_entry"),
+        now,
+    )
+    if existing is None:
+        database.execute(
+            "INSERT INTO notifications "
+            "(mako_instance, mako_id, app_name, summary, body, category, "
+            "desktop_entry, created_at, updated_at, dismissed) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+            (instance, mako_id, *values[:-1], now, now),
+        )
+    else:
+        dismissed = 0 if active else int(existing["dismissed"])
+        database.execute(
+            "UPDATE notifications SET app_name = ?, summary = ?, body = ?, "
+            "category = ?, desktop_entry = ?, updated_at = ?, dismissed = ? "
+            "WHERE id = ?",
+            (*values, dismissed, int(existing["id"])),
+        )
+
+
+def deduplicate_visible(database):
+    # Repeated system state notices should refresh one card across Mako
+    # restarts. Preserve individual SMS notifications even when two messages
+    # happen to contain the same text.
+    database.execute(
+        "UPDATE notifications AS older SET dismissed = 1 "
+        "WHERE older.dismissed = 0 AND lower(older.app_name) != 'spacebar' "
+        "AND EXISTS (SELECT 1 FROM notifications AS newer "
+        "WHERE newer.dismissed = 0 "
+        "AND newer.app_name = older.app_name "
+        "AND newer.summary = older.summary "
+        "AND newer.body = older.body "
+        "AND newer.category = older.category "
+        "AND (newer.updated_at > older.updated_at "
+        "OR (newer.updated_at = older.updated_at AND newer.id > older.id)))"
+    )
+
+
+def sync_mako(notification_id=None):
+    instance = mako_instance()
+    active = mako_json("list")
+    history = mako_json("history")
+    found = notification_id is None
+
+    def selected(item):
+        if notification_id is None:
+            return True
+        try:
+            return int(item.get("id", 0)) == notification_id
+        except (AttributeError, TypeError, ValueError):
+            return False
+
+    with open_database() as database:
+        for item in active:
+            if selected(item):
+                found = True
+                store_item(database, instance, item, True)
+        for item in history:
+            if selected(item):
+                found = True
+                store_item(database, instance, item, False)
+        deduplicate_visible(database)
+        database.execute(
+            "DELETE FROM notifications WHERE id NOT IN "
+            "(SELECT id FROM notifications ORDER BY updated_at DESC LIMIT 250)"
+        )
+    return found
+
+
+def capture_notification(notification_id):
+    # Mako can spawn on-notify before makoctl exposes the new item. Keep this
+    # event-driven, but tolerate that short publication race.
+    for attempt in range(6):
+        if sync_mako(notification_id):
+            return True
+        if attempt < 5:
+            time.sleep(0.04)
+    return False
+
+
+def encoded(value):
+    text = "" if value is None else str(value)
+    return base64.b64encode(text.encode("utf-8")).decode("ascii")
+
+
+def history_rows(sync=True):
+    if sync:
+        sync_mako()
+    with open_database() as database:
+        rows = database.execute(
+            "SELECT id, app_name, summary, body FROM notifications "
+            "WHERE dismissed = 0 ORDER BY updated_at DESC LIMIT 100"
+        )
+        for item in rows:
+            print(
+                item["id"],
+                encoded(item["app_name"]),
+                encoded(item["summary"]),
+                encoded(item["body"]),
+                sep="\t",
+            )
+
+
+def refresh_shade():
+    """Tell the resident shade to replace its cached rows off the pull path."""
+    runtime = Path(
+        os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    )
+    path = runtime / "ctlst-shade.sock"
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as client:
+            client.sendto(b"R", str(path))
+    except OSError:
+        pass
+
+
+def badge_payload():
+    """Emit a tiny, read-only Waybar status affordance.
+
+    Mako's on-notify hook persists each notification, so this never polls Mako
+    or starts another notification watcher just to paint the top bar.
+    """
+    try:
+        with open_database() as database:
+            count = int(
+                database.execute(
+                    "SELECT count(*) FROM notifications WHERE dismissed = 0"
+                ).fetchone()[0]
+            )
+    except sqlite3.Error:
+        count = 0
+    shown = "99+" if count > 99 else str(count)
+    payload = {
+        # MDI bell / bell-outline from the pinned CTLST status subset.
+        "text": f"󰂚{shown}" if count else "󰂜",
+        "tooltip": (
+            f"{count} notification{'s' if count != 1 else ''} — tap to open"
+            if count
+            else "No notifications — tap to open Notifications"
+        ),
+        "class": "unread" if count else "clear",
+    }
+    print(json.dumps(payload, ensure_ascii=False))
+
+
+def refresh_bar():
+    """Refresh the badge immediately after a persisted state transition."""
+    try:
+        subprocess.run(["pkill", "-RTMIN+11", "-x", "waybar"], check=False)
+    except OSError:
+        pass
+
+
+def find_notification(notification_id):
+    with open_database() as database:
+        return database.execute(
+            "SELECT * FROM notifications WHERE id = ? AND dismissed = 0",
+            (notification_id,),
+        ).fetchone()
+
+
+def number_from_spacebar(item):
+    summary = str(item["summary"] or "")
+    body = str(item["body"] or "")
+    sender = re.match(r"Message from\s+(.+)", summary, re.IGNORECASE)
+    for value in ((sender.group(1) if sender else ""), body):
+        match = re.search(r"(?:\+?\d[\d ()-]{6,}\d)", value)
+        if match:
+            return re.sub(r"[^\d+]", "", match.group(0))
+
+    data = Path(
+        os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")
+    )
+    path = data / "spacebar" / "messages.sqlite"
+    if not path.is_file() or not body:
+        return ""
+    try:
+        database = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        columns = {
+            row[1] for row in database.execute("PRAGMA table_info(messages)")
+        }
+        number_column = next(
+            (name for name in ("phoneNumber", "address", "number") if name in columns),
+            None,
+        )
+        time_column = next(
+            (
+                name
+                for name in ("sentTime", "time", "datetime", "timestamp")
+                if name in columns
+            ),
+            None,
+        )
+        if number_column is None or "text" not in columns:
+            return ""
+        ordering = f" ORDER BY {time_column} DESC" if time_column else ""
+        row = database.execute(
+            f"SELECT {number_column} FROM messages WHERE text = ?"
+            f"{ordering} LIMIT 1",
+            (body,),
+        ).fetchone()
+        return str(row[0] or "") if row else ""
+    except sqlite3.Error:
+        return ""
+    finally:
+        if "database" in locals():
+            database.close()
+
+
+def launch(item):
+    summary = str(item["summary"] or "")
+    app_name = str(item["app_name"] or "")
+    category = str(item["category"] or "")
+
+    if app_name.casefold() == "spacebar" or summary.casefold().startswith(
+        "message from "
+    ):
+        number = number_from_spacebar(item)
+        if not number:
+            return False
+        command = [
+            str(Path(os.environ.get("CTLST_LIBEXEC_DIR", Path(__file__).resolve().parent)) / "app-run"),
+            "desktop",
+            "dev.ctlst.Messages.desktop",
+            f"sms:{number}",
+        ]
+    elif "call" in category.casefold() or "call" in summary.casefold():
+        command = [
+            str(Path(os.environ.get("CTLST_LIBEXEC_DIR", Path(__file__).resolve().parent)) / "app-run"),
+            "desktop",
+            "dev.ctlst.Dialer.desktop",
+        ]
+    elif item["desktop_entry"]:
+        command = [
+            str(Path(os.environ.get("CTLST_LIBEXEC_DIR", Path(__file__).resolve().parent)) / "app-run"),
+            "desktop",
+            str(item["desktop_entry"]),
+        ]
+    else:
+        return False
+    try:
+        subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError:
+        return False
+    return True
+
+
+def dismiss_notification(notification_id):
+    with open_database() as database:
+        item = database.execute(
+            "SELECT mako_instance, mako_id FROM notifications WHERE id = ?",
+            (notification_id,),
+        ).fetchone()
+        database.execute(
+            "UPDATE notifications SET dismissed = 1 WHERE id = ?",
+            (notification_id,),
+        )
+    if item is not None and item["mako_instance"] == mako_instance():
+        subprocess.run(
+            [
+                "makoctl",
+                "dismiss",
+                "--no-history",
+                "-n",
+                str(item["mako_id"]),
+            ],
+            check=False,
+        )
+
+
+def clear_history():
+    with open_database() as database:
+        database.execute("UPDATE notifications SET dismissed = 1")
+    subprocess.run(
+        ["makoctl", "dismiss", "--all", "--no-history"],
+        check=False,
+    )
+    for _ in range(100):
+        if not mako_json("history"):
+            break
+        subprocess.run(["makoctl", "restore"], check=False)
+        subprocess.run(
+            ["makoctl", "dismiss", "--all", "--no-history"],
+            check=False,
+        )
+
+
+def show_keyboard_later():
+    script = str(Path(os.environ.get("CTLST_LIBEXEC_DIR", Path(__file__).resolve().parent)) / "toggle-keyboard")
+    subprocess.Popen(
+        ["sh", "-c", 'sleep 0.35; exec "$1"', "sh", script],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def open_latest_message(reply=False):
+    sync_mako()
+    with open_database() as database:
+        item = database.execute(
+            "SELECT * FROM notifications WHERE dismissed = 0 AND "
+            "(lower(app_name) = 'spacebar' OR "
+            "lower(summary) LIKE 'message from %') "
+            "ORDER BY updated_at DESC LIMIT 1"
+        ).fetchone()
+    if item is None:
+        return
+    if not launch(item):
+        return
+    if reply:
+        show_keyboard_later()
+    dismiss_notification(int(item["id"]))
+
+
+def open_mako_notification(mako_id, reply=False):
+    sync_mako(mako_id)
+    instance = mako_instance()
+    with open_database() as database:
+        item = database.execute(
+            "SELECT * FROM notifications WHERE mako_instance = ? "
+            "AND mako_id = ? AND dismissed = 0",
+            (instance, mako_id),
+        ).fetchone()
+    if item is None or not launch(item):
+        return False
+    if reply:
+        show_keyboard_later()
+    dismiss_notification(int(item["id"]))
+    return True
+
+
+def main():
+    command = sys.argv[1] if len(sys.argv) > 1 else "list"
+    if command == "capture":
+        notification_id = int(sys.argv[2]) if len(sys.argv) == 3 else None
+        capture_notification(notification_id)
+        refresh_bar()
+        refresh_shade()
+    elif command == "list":
+        history_rows()
+    elif command == "cached-list":
+        history_rows(sync=False)
+    elif command == "badge":
+        badge_payload()
+    elif command == "open" and len(sys.argv) == 3:
+        item = find_notification(int(sys.argv[2]))
+        if item is not None and launch(item):
+            dismiss_notification(int(item["id"]))
+            refresh_bar()
+            refresh_shade()
+    elif command == "reply-mako" and len(sys.argv) == 3:
+        if open_mako_notification(int(sys.argv[2]), reply=True):
+            refresh_bar()
+            refresh_shade()
+    elif command == "dismiss" and len(sys.argv) == 3:
+        dismiss_notification(int(sys.argv[2]))
+        refresh_bar()
+        refresh_shade()
+    elif command == "clear":
+        clear_history()
+        refresh_bar()
+        refresh_shade()
+    elif command == "open-latest-message":
+        open_latest_message()
+        refresh_bar()
+        refresh_shade()
+    elif command == "reply-latest-message":
+        open_latest_message(reply=True)
+        refresh_bar()
+        refresh_shade()
+    else:
+        raise SystemExit(
+            "usage: notification-history "
+            "{capture [MAKO_ID]|list|cached-list|badge|open ID|dismiss ID|"
+            "reply-mako MAKO_ID|open-latest-message|"
+            "reply-latest-message|clear}"
+        )
+
+
+if __name__ == "__main__":
+    main()

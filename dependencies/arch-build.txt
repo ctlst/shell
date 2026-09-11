@@ -1,0 +1,4 @@
+# Arch libraries include their headers in the runtime packages.
+base-devel
+pkgconf
+wayland-protocols

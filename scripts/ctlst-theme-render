@@ -1,0 +1,434 @@
+#!/usr/bin/env python3
+"""Render every CTLST surface from one validated semantic theme file."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import tempfile
+from collections import OrderedDict
+from pathlib import Path
+
+
+KEY_RE = re.compile(r"[A-Z][A-Z0-9_]*\Z")
+COLOR_RE = re.compile(r"(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\Z")
+PLACEHOLDER_RE = re.compile(r"@([A-Z][A-Z0-9_]*(?:_(?:CSS|HEX|RGB|ALPHA))?)@")
+
+COLOR_KEYS = (
+    "SHELL_BG",
+    "SHELL_RAISED",
+    "SHELL_PANEL",
+    "SHELL_PANEL_ALT",
+    "SHELL_LINE",
+    "SHELL_LINE_SOFT",
+    "SHELL_TEXT",
+    "SHELL_MUTED",
+    "SHELL_ACCENT",
+    "SHELL_ACCENT_SOFT",
+    "SHELL_WARM",
+    "SHELL_DANGER",
+    "SHELL_DANGER_ACTIVE",
+    "SHELL_SELECTED_TEXT",
+    "SHELL_ON_WALLPAPER",
+    "SHELL_OVERLAY",
+    "KEYBOARD_BG",
+    "KEYBOARD_FG",
+    "KEYBOARD_FG_SPECIAL",
+    "KEYBOARD_PRESS",
+    "KEYBOARD_PRESS_SPECIAL",
+    "KEYBOARD_TEXT",
+    "KEYBOARD_TEXT_SPECIAL",
+    "PAD_SURFACE",
+    "PAD_CONTROL",
+    "PAD_ACCENT",
+    "PAD_TEXT",
+    "PAD_FACE_A",
+    "PAD_FACE_B",
+    "PAD_FACE_X",
+    "PAD_FACE_Y",
+    "ACTION_HUB",
+    "ACTION_HUB_TEXT",
+    "ACTION_PAD",
+    "ACTION_PAD_TEXT",
+    "ACTION_KEYS",
+    "ACTION_KEYS_TEXT",
+    "ACTION_CLOSE",
+    "ACTION_CLOSE_TEXT",
+    "ACTION_RING",
+    "LOCK_BG_TOP",
+    "LOCK_BG_BOTTOM",
+)
+
+DEFAULTS = OrderedDict(
+    (
+        ("THEME_MODE", "dark"),
+        ("ICON_THEME", "Papirus"),
+        ("WALLPAPER", ""),
+        ("FOLLOW_THEME_WALLPAPER", "1"),
+        ("SHELL_BG", "111917ff"),
+        ("SHELL_RAISED", "1b2724ff"),
+        ("SHELL_PANEL", "172724ff"),
+        ("SHELL_PANEL_ALT", "213431ff"),
+        ("SHELL_LINE", "5f716b42"),
+        ("SHELL_LINE_SOFT", "5f716b24"),
+        ("SHELL_TEXT", "f4ede3ff"),
+        ("SHELL_MUTED", "a4b0aaff"),
+        ("SHELL_ACCENT", "65b7a7ff"),
+        ("SHELL_ACCENT_SOFT", "244941ff"),
+        ("SHELL_WARM", "e7a93bff"),
+        ("SHELL_DANGER", "b64a37ff"),
+        ("SHELL_DANGER_ACTIVE", "e45e47ff"),
+        ("SHELL_SELECTED_TEXT", "111713ff"),
+        ("SHELL_ON_WALLPAPER", "ffffffff"),
+        ("SHELL_OVERLAY", "0b1210e8"),
+        ("KEYBOARD_BG", "111917f2"),
+        ("KEYBOARD_FG", "263632ff"),
+        ("KEYBOARD_FG_SPECIAL", "315f58ff"),
+        ("KEYBOARD_PRESS", "65b7a7ff"),
+        ("KEYBOARD_PRESS_SPECIAL", "e7a93bff"),
+        ("KEYBOARD_TEXT", "fffaf0ff"),
+        ("KEYBOARD_TEXT_SPECIAL", "111713ff"),
+        ("PAD_SURFACE", "111917e8"),
+        ("PAD_CONTROL", "315f58d8"),
+        ("PAD_ACCENT", "65b7a7ff"),
+        ("PAD_TEXT", "fffaf0ff"),
+        ("PAD_FACE_A", "53a86cff"),
+        ("PAD_FACE_B", "d65f57ff"),
+        ("PAD_FACE_X", "4d86c9ff"),
+        ("PAD_FACE_Y", "e7b74fff"),
+        ("ACTION_HUB", "172724f2"),
+        ("ACTION_HUB_TEXT", "f4ede3ff"),
+        ("ACTION_PAD", "e7a93bff"),
+        ("ACTION_PAD_TEXT", "111713ff"),
+        ("ACTION_KEYS", "65b7a7ff"),
+        ("ACTION_KEYS_TEXT", "10201dff"),
+        ("ACTION_CLOSE", "b64a37ff"),
+        ("ACTION_CLOSE_TEXT", "fff8edff"),
+        ("ACTION_RING", "f4ede3ff"),
+        ("LOCK_BG_TOP", "07131cff"),
+        ("LOCK_BG_BOTTOM", "0b2425ff"),
+        ("CTLST_TOUCH_MIN", "48"),
+        ("CTLST_PRIMARY_MIN", "56"),
+        ("CTLST_RADIUS_CONTROL", "16"),
+        ("CTLST_RADIUS_CARD", "24"),
+        ("CTLST_RADIUS_SHEET", "30"),
+        ("CTLST_SPACING", "8"),
+        ("CTLST_FOCUS_WIDTH", "0"),
+    )
+)
+
+
+def parse_env(path: Path, required: bool = False) -> OrderedDict[str, str]:
+    values: OrderedDict[str, str] = OrderedDict()
+    if not path.exists():
+        if required:
+            raise ValueError(f"missing theme file: {path}")
+        return values
+    for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            raise ValueError(f"{path}:{number}: expected KEY=VALUE")
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if not KEY_RE.fullmatch(key):
+            raise ValueError(f"{path}:{number}: invalid key {key!r}")
+        if "\n" in value or "\x00" in value:
+            raise ValueError(f"{path}:{number}: invalid value")
+        values[key] = value
+    return values
+
+
+def color_parts(value: str) -> tuple[int, int, int, int]:
+    value = value.removeprefix("#")
+    if not COLOR_RE.fullmatch(value):
+        raise ValueError(f"invalid color {value!r}; use RRGGBB or RRGGBBAA")
+    if len(value) == 6:
+        value += "ff"
+    return tuple(int(value[index : index + 2], 16) for index in range(0, 8, 2))
+
+
+def color_css(value: str) -> str:
+    red, green, blue, alpha = color_parts(value)
+    return f"rgba({red}, {green}, {blue}, {alpha / 255:.4f})"
+
+
+def token_map(values: dict[str, str]) -> dict[str, str]:
+    result = dict(values)
+    for key in COLOR_KEYS:
+        red, green, blue, alpha = color_parts(values[key])
+        result[f"{key}_CSS"] = color_css(values[key])
+        result[f"{key}_HEX"] = f"#{red:02x}{green:02x}{blue:02x}{alpha:02x}"
+        result[f"{key}_RGB"] = f"{red:02x}{green:02x}{blue:02x}"
+        result[f"{key}_ALPHA"] = f"{alpha / 255:.4f}"
+    return result
+
+
+def relative_luminance(value: str) -> float:
+    red, green, blue, _alpha = color_parts(value)
+
+    def linear(channel: int) -> float:
+        normalized = channel / 255
+        if normalized <= 0.04045:
+            return normalized / 12.92
+        return ((normalized + 0.055) / 1.055) ** 2.4
+
+    return (
+        0.2126 * linear(red)
+        + 0.7152 * linear(green)
+        + 0.0722 * linear(blue)
+    )
+
+
+def contrast_ratio(first: str, second: str) -> float:
+    brighter, darker = sorted(
+        (relative_luminance(first), relative_luminance(second)),
+        reverse=True,
+    )
+    return (brighter + 0.05) / (darker + 0.05)
+
+
+def accessible_terminal_color(
+    value: str,
+    background: str,
+    text: str,
+    minimum: float = 4.5,
+) -> str:
+    """Move an ANSI color toward readable text without changing its hue first."""
+    if contrast_ratio(value, background) >= minimum:
+        return value
+
+    source = color_parts(value)
+    endpoint = max(
+        (text, "000000ff", "ffffffff"),
+        key=lambda candidate: contrast_ratio(candidate, background),
+    )
+    target = color_parts(endpoint)
+    best = endpoint
+    for step in range(1, 101):
+        amount = step / 100
+        mixed = tuple(
+            round(source[index] * (1 - amount) + target[index] * amount)
+            for index in range(3)
+        )
+        candidate = "".join(f"{channel:02x}" for channel in mixed) + "ff"
+        if contrast_ratio(candidate, background) >= minimum:
+            return candidate
+        best = candidate
+    return best
+
+
+def terminal_tokens(values: dict[str, str]) -> dict[str, str]:
+    background = values["SHELL_BG"]
+    text = values["SHELL_TEXT"]
+    semantic = {
+        "TERM_FOREGROUND": text,
+        "TERM_BACKGROUND": background,
+        "TERM_BLACK": values["SHELL_MUTED"],
+        "TERM_RED": values["SHELL_DANGER"],
+        "TERM_GREEN": values["SHELL_ACCENT"],
+        "TERM_YELLOW": values["SHELL_WARM"],
+        "TERM_BLUE": values["SHELL_ACCENT"],
+        "TERM_MAGENTA": values["SHELL_WARM"],
+        "TERM_CYAN": values["SHELL_ACCENT"],
+        "TERM_WHITE": text,
+        "TERM_BRIGHT_BLACK": values["SHELL_MUTED"],
+        "TERM_BRIGHT_RED": values["SHELL_DANGER_ACTIVE"],
+        "TERM_BRIGHT_GREEN": values["SHELL_ACCENT"],
+        "TERM_BRIGHT_YELLOW": values["SHELL_WARM"],
+        "TERM_BRIGHT_BLUE": values["SHELL_ACCENT"],
+        "TERM_BRIGHT_MAGENTA": values["SHELL_WARM"],
+        "TERM_BRIGHT_CYAN": values["SHELL_ACCENT"],
+        "TERM_BRIGHT_WHITE": text,
+    }
+    for key, value in tuple(semantic.items()):
+        if key not in {"TERM_BACKGROUND"}:
+            semantic[key] = accessible_terminal_color(
+                value,
+                background,
+                text,
+            )
+
+    tokens: dict[str, str] = {}
+    for key, value in semantic.items():
+        red, green, blue, _alpha = color_parts(value)
+        tokens[f"{key}_RGB"] = f"{red:02x}{green:02x}{blue:02x}"
+    return tokens
+
+
+def render_template(path: Path, tokens: dict[str, str]) -> str:
+    template = path.read_text(encoding="utf-8")
+
+    def replace(match: re.Match[str]) -> str:
+        key = match.group(1)
+        if key not in tokens:
+            raise ValueError(f"{path}: unknown theme placeholder @{key}@")
+        return tokens[key]
+
+    return PLACEHOLDER_RE.sub(replace, template)
+
+
+def atomic_write(path: Path, contents: str, mode: int = 0o644) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(contents)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
+def palette_css(values: dict[str, str]) -> str:
+    aliases = (
+        ("ctlst_bg", "SHELL_BG"),
+        ("ctlst_raised", "SHELL_RAISED"),
+        ("ctlst_panel", "SHELL_PANEL"),
+        ("ctlst_panel_alt", "SHELL_PANEL_ALT"),
+        ("ctlst_line", "SHELL_LINE"),
+        ("ctlst_line_soft", "SHELL_LINE_SOFT"),
+        ("ctlst_text", "SHELL_TEXT"),
+        ("ctlst_muted", "SHELL_MUTED"),
+        ("ctlst_accent", "SHELL_ACCENT"),
+        ("ctlst_accent_soft", "SHELL_ACCENT_SOFT"),
+        ("ctlst_warm", "SHELL_WARM"),
+        ("ctlst_danger", "SHELL_DANGER"),
+        ("ctlst_danger_active", "SHELL_DANGER_ACTIVE"),
+        ("ctlst_selected_text", "SHELL_SELECTED_TEXT"),
+        ("ctlst_on_wallpaper", "SHELL_ON_WALLPAPER"),
+        ("ctlst_overlay", "SHELL_OVERLAY"),
+    )
+    lines = ["/* Generated by ctlst-theme-render. Edit theme sources/overrides, not this file. */"]
+    lines.extend(
+        f"@define-color {alias} {color_css(values[token])};" for alias, token in aliases
+    )
+    # An accent's selected text is not necessarily legible on a danger fill.
+    # Derive a separate role from the actual danger/background composite.
+    danger = color_parts(values["SHELL_DANGER"])
+    background = color_parts(values["SHELL_BG"])
+    opacity = danger[3] / 255
+    composite = "".join(
+        f"{round(danger[i] * opacity + background[i] * (1 - opacity)):02x}"
+        for i in range(3)
+    ) + "ff"
+    danger_text = max(("000000ff", "ffffffff"),
+                      key=lambda candidate: contrast_ratio(candidate, composite))
+    lines.append(f"@define-color ctlst_danger_text {color_css(danger_text)};")
+    # A destructive text link sits on the panel, not on a danger-colored fill.
+    # Keep it opaque and adjust just this derived role for the actual panel.
+    danger_label = accessible_terminal_color(
+        "".join(f"{channel:02x}" for channel in danger[:3]) + "ff",
+        values["SHELL_PANEL"], values["SHELL_TEXT"])
+    lines.append(f"@define-color ctlst_danger_label {color_css(danger_label)};")
+    return "\n".join(lines) + "\n"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("theme_dir", type=Path)
+    parser.add_argument("shared_dir", type=Path)
+    parser.add_argument("output_dir", type=Path)
+    parser.add_argument("overrides", nargs="*", type=Path)
+    parser.add_argument("--css-override", action="append", default=[], type=Path,
+                        help="GTK stylesheet imported after the theme; repeat in cascade order")
+    args = parser.parse_args()
+
+    values = OrderedDict(DEFAULTS)
+    supplied = parse_env(args.theme_dir / "theme.env", required=True)
+    for override in args.overrides:
+        supplied.update(parse_env(override))
+    values.update(supplied)
+    # Minimal palettes should not inherit unrelated dark lock gradients.
+    for key in ("LOCK_BG_TOP", "LOCK_BG_BOTTOM"):
+        if key not in supplied:
+            values[key] = values["SHELL_BG"]
+    for key, role in {
+        "PAD_SURFACE": "SHELL_PANEL", "PAD_CONTROL": "SHELL_MUTED",
+        "PAD_TEXT": "SHELL_TEXT", "PAD_ACCENT": "SHELL_ACCENT",
+        "ACTION_HUB": "SHELL_PANEL", "ACTION_HUB_TEXT": "SHELL_TEXT",
+        "ACTION_PAD": "SHELL_PANEL_ALT", "ACTION_PAD_TEXT": "SHELL_TEXT",
+        "ACTION_KEYS": "SHELL_PANEL_ALT", "ACTION_KEYS_TEXT": "SHELL_TEXT",
+        "ACTION_CLOSE": "SHELL_DANGER", "ACTION_RING": "SHELL_ACCENT",
+    }.items():
+        if key not in supplied:
+            values[key] = values[role]
+    if "ACTION_CLOSE_TEXT" not in supplied:
+        values["ACTION_CLOSE_TEXT"] = max(
+            ("000000ff", "ffffffff"),
+            key=lambda candidate: contrast_ratio(candidate, values["ACTION_CLOSE"]),
+        )
+    # An accent override can make the palette's original selected text illegible.
+    # Keep authored colors when readable; otherwise choose a contrasting ink.
+    if contrast_ratio(values["SHELL_SELECTED_TEXT"], values["SHELL_ACCENT"]) < 4.5:
+        values["SHELL_SELECTED_TEXT"] = max(
+            ("000000ff", "ffffffff"),
+            key=lambda candidate: contrast_ratio(candidate, values["SHELL_ACCENT"]),
+        )
+    values.setdefault("THEME_NAME", args.theme_dir.name)
+    for key in COLOR_KEYS:
+        color_parts(values[key])
+    if values["THEME_MODE"] not in {"light", "dark"}:
+        raise ValueError("THEME_MODE must be light or dark")
+
+    tokens = token_map(values)
+    tokens.update(terminal_tokens(values))
+    components = (args.shared_dir / "components.css").read_text(encoding="utf-8")
+    variant_path = args.theme_dir / "variant.css"
+    variant = variant_path.read_text(encoding="utf-8") if variant_path.exists() else ""
+    theme_css = palette_css(values) + "\n" + components + "\n" + variant
+    for path in args.css_override:
+        # Preflight readability before replacing any output. Imports preserve
+        # relative asset URLs and avoid interpreting filenames as CSS syntax.
+        path.read_text(encoding="utf-8")
+        theme_css += "\n@import url(" + json.dumps(path.absolute().as_uri()) + ");\n"
+    atomic_write(args.output_dir / "theme.css", theme_css)
+
+    template_outputs = {
+        "waybar.css.in": "waybar.css",
+        "mako.conf.in": "mako",
+        "fuzzel.ini.in": "fuzzel.ini",
+        "foot.ini.in": "foot.ini",
+        "sway.conf.in": "theme-sway.conf",
+        "gtk-settings.ini.in": "gtk-settings.ini",
+    }
+    templates = args.shared_dir / "templates"
+    for source, destination in template_outputs.items():
+        atomic_write(
+            args.output_dir / destination,
+            render_template(templates / source, tokens),
+        )
+
+    active_env = "\n".join(f"{key}={value}" for key, value in values.items()) + "\n"
+    atomic_write(args.output_dir / "theme.env", active_env)
+    manifest = {
+        "format": 1,
+        "name": values["THEME_NAME"],
+        "mode": values["THEME_MODE"],
+        "icon_theme": values["ICON_THEME"],
+        "wallpaper": values["WALLPAPER"],
+        "source": str(args.theme_dir),
+        "overrides": [str(path) for path in args.overrides if path.exists()],
+        "css_overrides": [str(path.absolute()) for path in args.css_override],
+    }
+    atomic_write(
+        args.output_dir / "theme.json",
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (ValueError, OSError) as error:
+        raise SystemExit(f"ctlst-theme-render: {error}") from error

@@ -1,0 +1,17 @@
+# Home's scalar schema. Override any value in ~/.config/ctlst/home.yaml.
+grid:
+  columns: 5
+  rows: 7
+  spacing_px: 10
+edit:
+  inset_px: 12
+  controls_gap_px: 12
+page:
+  animation_ms: 220
+  max_pages: 8
+rotation:
+  transition: none
+calendar:
+  month_min_height_px: 160
+widgets:
+  compact_height_px: 96

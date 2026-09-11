@@ -1,0 +1,24 @@
+/* Translucent glass without pretending Sway provides backdrop blur. */
+window#ctlstdrawer .drawer-root,
+window#ctlstshade .shade-root {
+  background: @ctlst_bg;
+}
+.ctlst-surface,
+.shade-card,
+.shade-settings-box,
+.home-widget,
+.home-widget-picker,
+.bubble,
+.compose-shell,
+.number-shell,
+.bottom-nav,
+.action-sheet {
+  background-image: linear-gradient(145deg,
+    alpha(@ctlst_panel_alt, 0.78), alpha(@ctlst_panel, 0.90));
+  box-shadow: 0 10px 28px alpha(#000000, 0.22);
+}
+.home-weather-card,
+.home-glance-card {
+  background-image: linear-gradient(145deg,
+    alpha(@ctlst_panel_alt, 0.72), alpha(@ctlst_panel, 0.82));
+}

@@ -1,0 +1,14 @@
+/* Additional Waybar styling. User override: ~/.config/ctlst/bar-style.css.
+ * Generated theme CSS is loaded first; these native GTK CSS layers follow. */
+
+#custom-recent {
+  min-height: 44px;
+  min-width: 80px;
+  margin: 0;
+  padding: 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+#custom-recent:hover { background: rgba(127, 127, 127, 0.12); }
+/* Battery precedes the Settings chevron here, not the outer screen edge. */
+window#waybar.status #battery { margin-right: 2px; }

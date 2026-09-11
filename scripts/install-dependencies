@@ -1,0 +1,81 @@
+#!/bin/sh
+# Install a declared Alpine/postmarketOS or Arch dependency profile.
+set -eu
+
+root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+manifest_dir="$root/dependencies"
+profile="${1:-runtime}"
+case "$profile" in
+    -h|--help)
+        printf 'usage: %s runtime|phone|build|all (Arch: runtime|build only)\n' "$0"
+        exit 0
+        ;;
+esac
+distro=alpine
+if command -v apk >/dev/null 2>&1; then
+    manager=apk
+elif command -v pacman >/dev/null 2>&1; then
+    manager=pacman
+    distro=arch
+else
+    printf '%s\n' 'dependency installer supports Alpine apk or Arch pacman' >&2
+    exit 1
+fi
+
+if [ "$distro" = arch ]; then
+    case "$profile" in
+        runtime) manifests="arch-runtime.txt" ;;
+        build) manifests="arch-runtime.txt arch-build.txt" ;;
+        -h|--help) printf 'usage: %s runtime|build (Arch core only)\n' "$0"; exit 0 ;;
+        *) printf 'unsupported Arch dependency profile: %s (use runtime or build)\n' "$profile" >&2; exit 2 ;;
+    esac
+else
+
+case "$profile" in
+    runtime)
+        manifests="alpine-runtime.txt"
+        ;;
+    phone)
+        manifests="alpine-runtime.txt alpine-phone.txt"
+        ;;
+    build)
+        manifests="alpine-runtime.txt alpine-build.txt"
+        ;;
+    all)
+        manifests="alpine-runtime.txt alpine-build.txt alpine-phone.txt alpine-motion-lab.txt"
+        ;;
+    -h|--help)
+        printf 'usage: %s runtime|phone|build|all\n' "$0"
+        exit 0
+        ;;
+    *)
+        printf 'unknown dependency profile: %s\n' "$profile" >&2
+        exit 2
+        ;;
+esac
+fi
+
+packages=
+for manifest in $manifests; do
+    [ -r "$manifest_dir/$manifest" ] || {
+        printf 'missing dependency manifest: %s\n' "$manifest_dir/$manifest" >&2
+        exit 1
+    }
+    entries="$(sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' "$manifest_dir/$manifest")"
+    packages="$packages $entries"
+done
+
+if [ "$(id -u)" -ne 0 ]; then
+    command -v sudo >/dev/null 2>&1 || {
+    printf '%s\n' 'run as root or install sudo' >&2
+    exit 1
+    }
+    set -- sudo
+else
+    set --
+fi
+if [ "$manager" = pacman ]; then
+    # Full upgrade: never refresh Arch databases without upgrading the system.
+    exec "$@" pacman -Syu --needed $packages
+fi
+exec "$@" apk add $packages

@@ -1,0 +1,198 @@
+* {
+  border: none;
+  border-radius: 0;
+  min-height: 0;
+  font-family: "Noto Sans", sans-serif;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+window#waybar {
+  color: #14221e;
+  background: transparent;
+}
+
+window#waybar.status {
+  border: none;
+  background: rgba(242, 234, 219, 0.48);
+}
+window#waybar.controls {
+  border: none;
+  background: transparent;
+}
+
+/* Compact top-bar app presence badges; the native dock remains the task UI. */
+#taskbar { background: transparent; margin: 0; padding: 0; }
+#taskbar button {
+  min-height: 20px;
+  min-width: 20px;
+  color: #65736d;
+  background: #e9dfce;
+  padding: 0 3px;
+  margin: 3px 1px;
+  border: 1px solid #d7d2c6;
+  border-radius: 10px;
+}
+#taskbar button.active { color: #fbf6ec; background: #17695e; }
+#taskbar button.minimized { color: #65736d; background: #f2eadb; }
+#taskbar button.urgent { color: #fbf6ec; background: #b83f32; }
+
+#workspaces button,
+#custom-apps,
+#custom-term,
+#custom-phone,
+#custom-messages,
+#custom-power,
+#custom-keyboard,
+#custom-rotate,
+#custom-close {
+  color: #65736d;
+  background: transparent;
+  padding: 0 9px;
+  margin: 3px 1px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+}
+
+window#waybar.controls #workspaces {
+  background: #e9dfce;
+  border: 1px solid #d7d2c6;
+  border-radius: 10px;
+  margin: 3px 1px;
+  padding: 0 2px;
+}
+
+#workspaces button {
+  min-width: 24px;
+  padding: 0 3px;
+  margin: 2px 0;
+  border-radius: 7px;
+  transition: min-width 120ms ease, background-color 120ms ease, color 120ms ease;
+}
+
+#workspaces button.focused {
+  min-width: 34px;
+  color: #fbf6ec;
+  background: #17695e;
+}
+
+#custom-ws1,
+#custom-ws2,
+#custom-ws3,
+#custom-ws4,
+#custom-ws5 {
+  min-width: 24px;
+  color: #65736d;
+  background: #e9dfce;
+  padding: 0 3px;
+  margin: 3px 0;
+  border-top: 1px solid #d7d2c6;
+  border-bottom: 1px solid #d7d2c6;
+  transition: min-width 120ms ease, background-color 120ms ease, color 120ms ease;
+}
+#custom-ws1 { margin-left: 1px; border-left: 1px solid #d7d2c6; border-radius: 10px 0 0 10px; }
+#custom-ws5 { margin-right: 1px; border-right: 1px solid #d7d2c6; border-radius: 0 10px 10px 0; }
+#custom-ws1.focused,
+#custom-ws2.focused,
+#custom-ws3.focused,
+#custom-ws4.focused,
+#custom-ws5.focused { min-width: 34px; color: #fbf6ec; background: #17695e; }
+#custom-ws1.urgent,
+#custom-ws2.urgent,
+#custom-ws3.urgent,
+#custom-ws4.urgent,
+#custom-ws5.urgent { color: #fbf6ec; background: #b83f32; }
+
+#workspaces button.urgent,
+#battery.critical,
+#custom-close {
+  color: #fbf6ec;
+  background: #b83f32;
+}
+
+#custom-apps,
+#custom-phone,
+#custom-messages,
+#custom-keyboard {
+  color: #17695e;
+  background: #d4e9e3;
+  border-color: #b9dcd3;
+}
+
+#custom-phone.unread,
+#custom-messages.unread {
+  color: #fbf6ec;
+  background: #c7612c;
+  border-color: #c7612c;
+}
+
+#custom-rotate { color: #c7612c; }
+#custom-power { color: #b83f32; }
+
+#custom-action-pad-space,
+#custom-action-keys-space,
+#custom-action-hub {
+  min-width: 20px;
+  padding: 0 9px;
+  margin: 3px 1px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+}
+#custom-action-pad-space,
+#custom-action-keys-space { color: transparent; background: transparent; }
+#custom-action-hub {
+  color: #17695e;
+  background: #d4e9e3;
+  border-color: #b9dcd3;
+  font-size: 8px;
+}
+#window { color: #14221e; padding: 0 8px; }
+
+#pulseaudio,
+#custom-sound,
+#network,
+#battery,
+#clock {
+  color: #65736d;
+  padding: 0 7px;
+}
+
+#battery.charging { color: #17695e; }
+#network.disconnected,
+#custom-sound.silent { color: #b83f32; }
+#custom-sound.vibrate { color: #c7612c; }
+
+tooltip {
+  color: #14221e;
+  background: #fbf6ec;
+  border: 1px solid #b9c4bb;
+}
+
+/* Compact Home-like status glyphs; app presence stays in #taskbar above. */
+#custom-notifications,
+#custom-sound,
+#network,
+#battery {
+  min-height: 20px;
+  min-width: 18px;
+  margin: 3px 0;
+  padding: 0 2px;
+  color: #65736d;
+  background: transparent;
+  font-family: "Symbols Nerd Font", "Noto Sans", sans-serif;
+  font-size: 13px;
+  font-weight: normal;
+}
+#custom-sound { min-width: 18px; letter-spacing: 0; }
+#custom-sound.call { color: #17695e; }
+#custom-notifications { min-width: 18px; font-size: 12px; }
+#custom-notifications.clear { color: #8a928d; }
+#custom-notifications.unread {
+  min-width: 26px;
+  color: #fbf6ec;
+  background: #c7612c;
+  border-radius: 10px;
+  padding: 0 4px;
+}
+#network { min-width: 18px; letter-spacing: 0; }
+#battery { min-width: 18px; margin-right: 14px; letter-spacing: 0; }

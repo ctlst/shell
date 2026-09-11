@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+"""Session actions using installed paths and capability checks."""
+import shutil
+import shlex
+import subprocess
+import sys
+from ctlst_config import generated_root, libexec_root, xdg_config_home
+
+actions = {
+    "Exit menu": None,
+    "Close focused app": [str(libexec_root() / "close-active")],
+    "Lock screen": [str(libexec_root() / "ctlstlock"), "lock"],
+    "Reload configuration": ["ctlst-session", "reload"],
+    "Log out": ["swaymsg", "exit"],
+}
+if shutil.which("loginctl"):
+    actions.update({name: ["loginctl", command] for name, command in
+                    (("Suspend", "suspend"), ("Reboot", "reboot"), ("Power off", "poweroff"))})
+
+def choose(title, options):
+    command = ["fuzzel", "--dmenu", f"--prompt={title}: ", "--only-match", "--no-sort"]
+    custom = xdg_config_home() / "ctlst" / "session-menu.ini"
+    config = generated_root() / "fuzzel.ini"
+    if custom.is_file():
+        command += [f"--config={custom}"]
+    elif config.is_file():
+        command += [f"--config={config}"]
+    if not custom.is_file():
+        command += ["--width=28", "--font=Noto Sans:size=14", "--line-height=44",
+                    "--lines=5", "--minimal-lines", "--selection-radius=12"]
+    result = subprocess.run(command, input="\n".join(options), text=True, capture_output=True)
+    choice = result.stdout.strip()
+    return choice if result.returncode == 0 and choice in options else None
+
+
+def main():
+    if sys.argv[1:] == ["--list-actions"]:
+        print("\n".join(actions))
+        return 0
+    if len(sys.argv) == 3 and sys.argv[1] == "--resolve" and sys.argv[2] in actions:
+        print(shlex.join(actions[sys.argv[2]] or ["true"]))
+        return 0
+    if sys.argv[1:]:
+        return 2
+    primary = [name for name in ("Exit menu", "Lock screen", "More options", "Reboot", "Power off")
+               if name == "More options" or name in actions]
+    secondary = ["Back"] + [name for name in actions if name not in primary]
+    page = primary
+    while True:
+        choice = choose("Session" if page is primary else "More options", page)
+        if choice is None or choice == "Exit menu":
+            return 0
+        if choice in ("More options", "Back"):
+            page = secondary if choice == "More options" else primary
+            continue
+        if choice in ("Close focused app", "Log out", "Reboot", "Power off", "Suspend"):
+            # First row and Escape are always safe. Match the explicit action;
+            # arbitrary text from a menu can never become a shell command.
+            confirmed = choose(choice + "?", ["Cancel", choice])
+            if confirmed != choice:
+                continue
+        action = actions.get(choice)
+        return subprocess.call(action) if action else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=CTLST Shell
+Comment=Touch-first CTLST session on upstream Sway
+Exec=ctlst-session start
+Type=Application
+DesktopNames=CTLST;Sway;

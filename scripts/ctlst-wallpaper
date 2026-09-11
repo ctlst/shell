@@ -1,0 +1,402 @@
+#!/usr/bin/env python3
+"""Import, list, and apply wallpapers selected by ctlst-preferences.
+
+Arbitrary paths are accepted only by ``import`` and copied into managed storage.
+The preference authority stores a root-relative ID, and this program resolves
+that ID again before passing it to Sway.
+"""
+
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+MODES = ("fill", "fit", "center")
+IMAGE_SUFFIXES = {".avif", ".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp"}
+DIMENSIONS = re.compile(r"(?<!\d)(\d{3,5})x(\d{3,5})(?!\d)", re.IGNORECASE)
+PHONE_ASPECT = 0.5
+SCRIPT_DIR = Path(__file__).resolve().parent
+PREFERENCES = SCRIPT_DIR / "ctlst-preferences"
+VERIFY_TIMEOUT = 2.0
+
+
+class WallpaperError(Exception):
+    pass
+
+
+def data_home():
+    return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
+
+
+def root_for(kind):
+    if kind == "system":
+        return Path(os.environ.get("CTLST_SYSTEM_WALLPAPER_DIR", "/usr/share/wallpapers"))
+    if kind == "managed":
+        return data_home() / "ctlst/wallpapers"
+    if kind == "packaged":
+        return Path(os.environ.get("CTLST_DATA_DIR", "/usr/share/ctlst-shell")) / "wallpapers"
+    raise WallpaperError("unknown wallpaper source")
+
+
+def resolve_id(wallpaper_id):
+    try:
+        kind, relative = wallpaper_id.split(":", 1)
+        root = root_for(kind).resolve(strict=True)
+        candidate = (root / relative).resolve(strict=True)
+    except (OSError, ValueError):
+        raise WallpaperError("wallpaper is unavailable") from None
+    if not candidate.is_file() or not candidate.is_relative_to(root):
+        raise WallpaperError("wallpaper is outside its managed root")
+    return candidate
+
+
+def preferences(*arguments):
+    result = subprocess.run(
+        [str(PREFERENCES), *arguments], check=False, text=True, capture_output=True
+    )
+    if result.returncode:
+        raise WallpaperError(result.stderr.strip() or "could not update preferences")
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise WallpaperError("invalid preferences response") from error
+
+
+def image_files(root, boundary):
+    images = []
+    try:
+        candidates = root.rglob("*")
+    except OSError:
+        return images
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError:
+            continue
+        if (
+            resolved.is_file()
+            and resolved.is_relative_to(boundary)
+            and resolved.suffix.lower() in IMAGE_SUFFIXES
+        ):
+            images.append(resolved)
+    return sorted(set(images))
+
+
+def image_score(path):
+    match = DIMENSIONS.search(path.stem)
+    if match is None:
+        return (2, 1.0, 0, str(path))
+    width, height = (int(value) for value in match.groups())
+    aspect = width / height
+    return (
+        0 if height >= width else 1,
+        abs(aspect - PHONE_ASPECT),
+        -(width * height),
+        str(path),
+    )
+
+
+def pretty_name(value):
+    value = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", value)
+    value = re.sub(r"[_-]+", " ", value)
+    return " ".join(part.capitalize() for part in value.split())
+
+
+def pack_name(directory):
+    metadata = directory / "metadata.json"
+    try:
+        payload = json.loads(metadata.read_text(encoding="utf-8"))
+        name = payload.get("KPlugin", {}).get("Name")
+    except (OSError, AttributeError, json.JSONDecodeError):
+        name = None
+    return name.strip() if isinstance(name, str) and name.strip() else pretty_name(directory.name)
+
+
+def pack_image(directory, boundary):
+    images = image_files(directory / "contents" / "images", boundary)
+    if not images:
+        images = [
+            path
+            for path in image_files(directory / "contents", boundary)
+            if "screenshot" not in path.stem.casefold()
+            and "images_dark" not in path.parts
+        ]
+    if not images:
+        images = image_files(directory / "contents", boundary)
+    return min(images, key=image_score) if images else None
+
+
+def wallpaper_entry(kind, root, path, name):
+    relative = path.relative_to(root).as_posix()
+    return {
+        "id": f"{kind}:{relative}",
+        "name": name,
+        "path": str(path),
+        "source": kind,
+    }
+
+
+def managed_wallpapers(root, kind="managed"):
+    entries = [
+        wallpaper_entry(kind, root, path, pretty_name(path.stem))
+        for path in image_files(root, root)
+    ]
+    return sorted(entries, key=lambda item: (item["name"].casefold(), item["id"]))
+
+
+def system_wallpapers(root):
+    entries = []
+    for candidate in sorted(root.iterdir(), key=lambda path: path.name.casefold()):
+        try:
+            if candidate.is_dir():
+                image = pack_image(candidate, root)
+                if image is not None:
+                    entries.append(wallpaper_entry("system", root, image, pack_name(candidate)))
+            elif candidate.is_file() and candidate.suffix.lower() in IMAGE_SUFFIXES:
+                image = candidate.resolve(strict=True)
+                if image.is_relative_to(root):
+                    entries.append(
+                        wallpaper_entry("system", root, image, pretty_name(candidate.stem))
+                    )
+        except OSError:
+            continue
+    return sorted(entries, key=lambda item: (item["name"].casefold(), item["id"]))
+
+
+def list_wallpapers():
+    entries = []
+    for kind in ("managed", "packaged", "system"):
+        root = root_for(kind)
+        try:
+            resolved_root = root.resolve(strict=True)
+        except OSError:
+            continue
+        if kind != "system":
+            entries.extend(managed_wallpapers(resolved_root, kind))
+        else:
+            entries.extend(system_wallpapers(resolved_root))
+    return entries
+
+
+def active_swaybgs():
+    backgrounds = []
+    for process in Path("/proc").glob("[0-9]*"):
+        try:
+            if (process / "comm").read_text(encoding="ascii").strip() != "swaybg":
+                continue
+            arguments = [
+                value.decode("utf-8", errors="replace")
+                for value in (process / "cmdline").read_bytes().split(b"\0")
+                if value
+            ]
+        except OSError:
+            continue
+        try:
+            path = Path(arguments[arguments.index("-i") + 1]).resolve(strict=True)
+        except (OSError, ValueError, IndexError):
+            continue
+        try:
+            mode = arguments[arguments.index("-m") + 1]
+        except (ValueError, IndexError):
+            mode = "fill"
+        backgrounds.append(
+            (int(process.name), path, mode if mode in MODES else "fill")
+        )
+    backgrounds.sort(reverse=True)
+    return [(path, mode) for _pid, path, mode in backgrounds]
+
+
+def active_swaybg():
+    backgrounds = active_swaybgs()
+    return backgrounds[0] if backgrounds else None
+
+
+def wait_for_swaybg(path, mode, timeout=VERIFY_TIMEOUT):
+    if os.environ.get("CTLST_WALLPAPER_SKIP_VERIFY") == "1":
+        return True
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        requested = (path, mode)
+        if requested in active_swaybgs():
+            # Surviving another compositor turn catches immediate decode exits.
+            time.sleep(0.1)
+            return requested in active_swaybgs()
+        time.sleep(0.05)
+    return False
+
+
+def request_background(path, mode):
+    command = os.environ.get("CTLST_SWAYMSG", "swaymsg")
+    result = subprocess.run(
+        [command, "output", "*", "bg", str(path), mode],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0 and wait_for_swaybg(path, mode)
+
+
+def restore_background(previous):
+    if previous is None:
+        return
+    path, mode = previous
+    request_background(path, mode)
+
+
+def wallpaper_id_for_path(path):
+    for kind in ("managed", "packaged", "system"):
+        try:
+            root = root_for(kind).resolve(strict=True)
+        except OSError:
+            continue
+        if path.is_file() and path.is_relative_to(root):
+            return f"{kind}:{path.relative_to(root).as_posix()}"
+    return None
+
+
+def current():
+    active = active_swaybg()
+    if active is not None:
+        path, mode = active
+        wallpaper_id = wallpaper_id_for_path(path)
+        if wallpaper_id is not None:
+            return {"id": wallpaper_id, "mode": mode}
+    return preferences("wallpaper", "get")
+
+
+def apply_wallpaper(wallpaper):
+    if wallpaper is None:
+        return None
+    mode = wallpaper.get("mode")
+    if mode not in MODES:
+        raise WallpaperError("invalid wallpaper mode")
+    path = resolve_id(wallpaper["id"])
+    previous = active_swaybg()
+    if previous == (path, mode):
+        return wallpaper
+    if not request_background(path, mode):
+        restore_background(previous)
+        raise WallpaperError("wallpaper failed to load; previous background restored")
+    return wallpaper
+
+
+def apply():
+    return apply_wallpaper(preferences("wallpaper", "get"))
+
+
+def set_wallpaper(wallpaper_id, mode):
+    wallpaper = {"id": wallpaper_id, "mode": mode}
+    previous = active_swaybg()
+    apply_wallpaper(wallpaper)
+    try:
+        preferences("wallpaper", "set", wallpaper_id, mode)
+    except WallpaperError:
+        restore_background(previous)
+        raise
+    return wallpaper
+
+
+def import_wallpaper(source_value, mode):
+    source = Path(source_value).expanduser()
+    try:
+        source = source.resolve(strict=True)
+    except OSError:
+        raise WallpaperError("selected wallpaper is unavailable") from None
+    if not source.is_file():
+        raise WallpaperError("selected wallpaper is not a regular file")
+    suffix = source.suffix.lower()
+    if suffix not in IMAGE_SUFFIXES:
+        raise WallpaperError("selected file is not a supported image")
+
+    existing_id = wallpaper_id_for_path(source)
+    if existing_id is not None and existing_id.startswith("managed:"):
+        result = set_wallpaper(existing_id, mode)
+        result["imported"] = str(source)
+        return result
+
+    managed = root_for("managed")
+    managed.mkdir(parents=True, exist_ok=True)
+    digest_builder = hashlib.sha256()
+    try:
+        with source.open("rb") as source_file:
+            while chunk := source_file.read(1024 * 1024):
+                digest_builder.update(chunk)
+    except OSError as error:
+        raise WallpaperError(f"could not read wallpaper: {error}") from error
+    digest = digest_builder.hexdigest()[:12]
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", source.stem).strip(".-")
+    destination = managed / f"{stem or 'wallpaper'}-{digest}{suffix}"
+    created = not destination.exists()
+    if created:
+        temporary = managed / f".{destination.name}.{os.getpid()}.tmp"
+        try:
+            with source.open("rb") as source_file, temporary.open("xb") as target_file:
+                while chunk := source_file.read(1024 * 1024):
+                    target_file.write(chunk)
+                target_file.flush()
+                os.fsync(target_file.fileno())
+            temporary.chmod(0o644)
+            os.replace(temporary, destination)
+        except OSError as error:
+            temporary.unlink(missing_ok=True)
+            raise WallpaperError(f"could not import wallpaper: {error}") from error
+
+    wallpaper_id = f"managed:{destination.name}"
+    try:
+        result = set_wallpaper(wallpaper_id, mode)
+    except WallpaperError:
+        if created:
+            destination.unlink(missing_ok=True)
+        raise
+    result["imported"] = str(destination)
+    return result
+
+
+def operation_lock():
+    runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+    runtime.mkdir(parents=True, exist_ok=True)
+    handle = (runtime / "ctlst-wallpaper.lock").open("a+", encoding="ascii")
+    fcntl.flock(handle, fcntl.LOCK_EX)
+    return handle
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(prog="ctlst-wallpaper")
+    commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("list")
+    commands.add_parser("current")
+    commands.add_parser("apply")
+    set_parser = commands.add_parser("set")
+    set_parser.add_argument("wallpaper_id")
+    set_parser.add_argument("mode", choices=MODES)
+    import_parser = commands.add_parser("import")
+    import_parser.add_argument("path")
+    import_parser.add_argument("mode", choices=MODES)
+    arguments = parser.parse_args(argv)
+    with operation_lock():
+        if arguments.command == "list":
+            result = list_wallpapers()
+        elif arguments.command == "current":
+            result = current()
+        elif arguments.command == "apply":
+            result = apply()
+        elif arguments.command == "import":
+            result = import_wallpaper(arguments.path, arguments.mode)
+        else:
+            result = set_wallpaper(arguments.wallpaper_id, arguments.mode)
+    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+
+
+if __name__ == "__main__":
+    try:
+        main(sys.argv[1:])
+    except WallpaperError as error:
+        print("ctlst-wallpaper: %s" % error, file=sys.stderr)
+        raise SystemExit(2)

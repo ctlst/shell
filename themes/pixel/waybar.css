@@ -1,0 +1,269 @@
+* {
+  border: none;
+  border-radius: 0;
+  min-height: 0;
+  font-family: "Noto Sans", sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+window#waybar {
+  color: #17151b;
+  background: transparent;
+}
+
+window#waybar.status {
+  color: #17151b;
+  background: rgba(244, 243, 248, 0.48);
+  border: none;
+  box-shadow: none;
+}
+
+window#waybar.controls {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+#custom-apps,
+#custom-term,
+#custom-phone,
+#custom-messages,
+#custom-pad,
+#custom-keyboard,
+#custom-rotate,
+#custom-close,
+#custom-power {
+  min-height: 34px;
+  min-width: 20px;
+  color: #1b1c1a;
+  background: rgba(247, 247, 242, 0.86);
+  padding: 0 11px;
+  margin: 4px 2px;
+  border: none;
+  border-radius: 17px;
+  box-shadow: none;
+}
+
+window#waybar.controls #custom-phone,
+window#waybar.controls #custom-messages,
+window#waybar.controls #custom-pad,
+window#waybar.controls #custom-keyboard,
+window#waybar.controls #custom-close {
+  min-height: 38px;
+  border-radius: 20px;
+}
+
+#custom-rotate {
+  color: #3f3519;
+  background: #f6e6b2;
+  font-size: 14px;
+}
+
+#custom-apps { color: #183744; background: #cce5f0; }
+#custom-messages { color: #183744; background: #cce5f0; }
+#custom-keyboard { color: #273044; background: #d8e2ff; }
+
+#custom-phone {
+  color: #29351c;
+  background: #dce8c7;
+}
+
+#custom-pad { color: #3c2f40; background: #eadcf0; }
+#custom-pad.active { color: #263b34; background: #c7e4d8; }
+
+#custom-close,
+#custom-power {
+  color: #5d211d;
+  background: #f5d9d5;
+  font-size: 15px;
+}
+
+#custom-action-pad-space,
+#custom-action-keys-space,
+#custom-action-hub {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0;
+  margin: 7px 10px 7px 2px;
+  border: none;
+  border-radius: 22px;
+  box-shadow: 0 3px 12px rgba(18, 12, 24, 0.18);
+}
+
+#custom-action-pad-space,
+#custom-action-keys-space {
+  color: transparent;
+  background: transparent;
+}
+
+#custom-action-hub {
+  color: #17151b;
+  background: rgba(255, 255, 255, 0.92);
+  font-size: 9px;
+}
+
+#custom-phone.unread,
+#custom-messages.unread {
+  color: #5d211d;
+  background: #f5c5bf;
+}
+
+#workspaces {
+  background: transparent;
+  border: none;
+  margin: 0;
+  padding: 0;
+}
+
+#workspaces button {
+  min-height: 40px;
+  min-width: 30px;
+  color: #ffffff;
+  background: transparent;
+  padding: 0 4px;
+  margin: 5px 1px;
+  border: none;
+  border-radius: 20px;
+  box-shadow: none;
+  transition: min-width 120ms ease, background-color 120ms ease, color 120ms ease;
+}
+
+#workspaces button.focused,
+#workspaces button.active {
+  min-width: 40px;
+  color: #263044;
+  background: #d8e2ff;
+}
+
+#workspaces button.urgent {
+  color: #5d211d;
+  background: #f5c5bf;
+}
+
+#taskbar {
+  background: transparent;
+  border: none;
+  margin: 0;
+  padding: 0;
+}
+
+#custom-steam-running {
+  background: #dce8c7;
+  border: none;
+  border-radius: 18px;
+  margin: 4px 1px;
+  padding: 0 3px;
+}
+
+#taskbar button {
+  min-height: 20px;
+  min-width: 20px;
+  color: #1b1c1a;
+  background: rgba(247, 247, 242, 0.86);
+  padding: 0 3px;
+  margin: 3px 1px;
+  border-radius: 10px;
+}
+
+#taskbar button.active {
+  color: #183744;
+  background: #cce5f0;
+}
+
+#taskbar button.minimized { background: #e8e9e3; }
+#taskbar button.urgent { color: #5d211d; background: #f5c5bf; }
+
+#custom-steam-running {
+  min-width: 36px;
+  color: #29351c;
+  padding: 0 8px;
+}
+
+#custom-steam-running.hidden {
+  min-width: 0;
+  font-size: 0;
+  background: transparent;
+  margin: 0;
+  padding: 0;
+}
+
+#custom-sound,
+#network,
+#battery,
+#clock {
+  color: #17151b;
+  background: transparent;
+  border-radius: 0;
+  margin: 0 2px;
+  padding: 0 3px;
+}
+
+#clock {
+  margin-left: 16px;
+  font-weight: 700;
+}
+
+#battery {
+  margin-right: 14px;
+  font-weight: 700;
+}
+
+#network {
+  font-size: 10px;
+}
+
+#custom-sound {
+  font-size: 0;
+  min-width: 5px;
+  padding: 0;
+}
+
+#custom-sound.silent,
+#custom-sound.vibrate {
+  font-size: 8px;
+  min-width: 12px;
+}
+
+#battery.charging { color: #44762b; background: transparent; }
+#battery.critical,
+#network.disconnected,
+#custom-sound.silent { color: #ba1a1a; background: transparent; }
+#custom-sound.vibrate { color: #6b5722; background: transparent; }
+
+tooltip {
+  color: #1b1c1a;
+  background: #fffdf7;
+  border: none;
+  border-radius: 12px;
+}
+
+/* The status lane is intentionally icon-first, like Home's small glance
+ * affordances. Taskbar buttons above remain the separate tiny app badges. */
+#custom-notifications,
+#custom-sound,
+#network,
+#battery {
+  min-height: 20px;
+  min-width: 18px;
+  margin: 3px 0;
+  padding: 0 2px;
+  color: #35363a;
+  background: transparent;
+  font-family: "Symbols Nerd Font", "Noto Sans", sans-serif;
+  font-size: 13px;
+  font-weight: normal;
+}
+#custom-sound { min-width: 18px; letter-spacing: 0; }
+#custom-sound.call { color: #6f24cf; }
+#custom-notifications { min-width: 18px; font-size: 12px; }
+#custom-notifications.clear { color: #77777c; }
+#custom-notifications.unread {
+  min-width: 26px;
+  color: #5d211d;
+  background: #f5c5bf;
+  border-radius: 10px;
+  padding: 0 4px;
+}
+#network { min-width: 18px; letter-spacing: 0; }
+#battery { min-width: 18px; margin-right: 14px; letter-spacing: 0; }

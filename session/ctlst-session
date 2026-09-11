@@ -1,0 +1,332 @@
+#!/usr/bin/env python3
+"""Inspect and validate CTLST's layered XDG configuration."""
+
+from __future__ import annotations
+
+import argparse
+import configparser
+import json
+import os
+import shlex
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import time
+import uuid
+from pathlib import Path
+
+
+sys.path.insert(0, str(Path(os.environ.get("CTLST_LIBEXEC_DIR", Path(__file__).resolve().parents[1] / "scripts"))))
+if not (Path(sys.path[0]) / "ctlst_config.py").is_file():
+    sys.path.insert(0, "/usr/libexec/ctlst-shell")
+from ctlst_config import (
+    INI_SCOPES, TEXT_SCOPES, config_paths, data_root, data_defaults,
+    profile_root, system_config_root, user_path, known_scope, read_layers,
+    resolved, component_environment, generated_root, libexec_root, suffix,
+)
+
+def show(scope: str) -> int:
+    path = user_path(scope)
+    print(f"# user: {path}")
+    if not path.is_file():
+        print("# not created; packaged/profile defaults are active")
+        return 0
+    sys.stdout.write(path.read_text(encoding="utf-8"))
+    return 0
+
+
+def paths_command(scope: str | None) -> int:
+    scopes = (scope,) if scope else (*INI_SCOPES, *TEXT_SCOPES)
+    for index, current in enumerate(scopes):
+        if len(scopes) > 1:
+            if index:
+                print()
+            print(f"[{current}]")
+        for label, path in config_paths(current):
+            state = "present" if path.is_file() else "missing"
+            print(f"{label}: {path} ({state})")
+    return 0
+
+
+def effective(scope: str) -> int:
+    if scope == "theme-style":
+        print("/* CSS layers after the selected theme; not computed widget styles. */")
+        for label, path in config_paths(scope):
+            if path.is_file():
+                print(f"/* {label} */")
+                print(f"@import url({json.dumps(path.absolute().as_uri())});")
+        return 0
+    if scope not in INI_SCOPES:
+        print(f"effective merging is not defined for {scope}{suffix(scope)}", file=sys.stderr)
+        return 2
+    parser, origins = resolved(scope)
+    for section in parser.sections():
+        print(f"[{section}]")
+        for key, value in parser[section].items():
+            print(f"{key} = {value}  # {origins[(section, key)]}")
+        print()
+    return 0
+
+
+def check() -> int:
+    failed = False
+    for scope in INI_SCOPES:
+        try:
+            resolved(scope)
+        except (OSError, ValueError, configparser.Error) as error:
+            failed = True
+            print(f"{scope}: {error}", file=sys.stderr)
+    for scope in TEXT_SCOPES:
+        for _, path in config_paths(scope):
+            if (path.exists() or path.is_symlink()) and not path.is_file():
+                failed = True
+                print(f"{scope}: expected a file: {path}", file=sys.stderr)
+            elif scope == "theme-style" and path.is_file():
+                try:
+                    path.read_text(encoding="utf-8")
+                except (OSError, UnicodeError) as error:
+                    failed = True
+                    print(f"{scope}: {error}", file=sys.stderr)
+    if failed:
+        return 1
+    print("configuration syntax is valid (CSS contents are checked by GTK when loaded)")
+    return 0
+
+
+def runtime_root() -> Path:
+    configured = os.environ.get("XDG_RUNTIME_DIR")
+    return Path(configured) if configured else Path(f"/run/user/{os.getuid()}")
+
+
+def sway_include(path: Path) -> str:
+    escaped = str(path).replace("\\", "\\\\").replace('"', '\\"')
+    return f'include "{escaped}"'
+
+
+def sway_paths() -> list[Path]:
+    paths = [
+        data_root() / "sway" / "ctlst.conf",
+        data_defaults() / "sway.conf",
+        generated_root() / "input.conf",
+        generated_root() / "theme-sway.conf",
+    ]
+    profiles = profile_root()
+    if profiles.is_dir():
+        paths.extend(
+            profile / "sway.conf"
+            for profile in sorted(profiles.iterdir())
+            if profile.is_dir() and (profile / "sway.conf").is_file()
+        )
+    paths.extend(
+        [
+            system_config_root() / "sway.conf",
+            user_path("sway"),
+        ]
+    )
+    return paths
+
+
+def render_sway_config() -> Path:
+    base = sway_paths()[0]
+    if not base.is_file():
+        raise FileNotFoundError(f"packaged Sway configuration is missing: {base}")
+    directory = runtime_root() / "ctlst-shell"
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = directory / "sway.conf"
+    temporary = directory / f"sway.conf.tmp.{os.getpid()}"
+    content = "\n".join(sway_include(candidate) for candidate in sway_paths()) + "\n"
+    temporary.write_text(content, encoding="utf-8")
+    temporary.chmod(0o600)
+    temporary.replace(path)
+    return path
+
+
+def render_assets():
+    output = generated_root()
+    output.mkdir(mode=0o700, parents=True, exist_ok=True)
+    inputs, _ = resolved("input")
+    keyboard = inputs["input"]
+    (output / "input.conf").write_text(
+        "input type:keyboard {\n"
+        f"    xkb_layout {keyboard['keyboard_layout']}\n"
+        f"    repeat_delay {keyboard['keyboard_repeat_delay_ms']}\n"
+        f"    repeat_rate {keyboard['keyboard_repeat_rate_hz']}\n"
+        "}\ninput type:pointer {\n"
+        f"    natural_scroll {'enabled' if inputs.getboolean('input', 'natural_scroll') else 'disabled'}\n"
+        "}\n", encoding="utf-8")
+    theme, _ = resolved("theme")
+    name = theme.get("theme", "name")
+    catalog = data_root() / "themes"
+    override = output / "theme-overrides.env"
+    accent = theme.get("theme", "accent")
+    # Always replace the generated override, including when returning to the
+    # palette, so a previous pinned accent cannot survive a reload.
+    override.write_text("" if accent == "theme" else f"SHELL_ACCENT={accent}\n",
+                        encoding="utf-8")
+    css_arguments = [argument for _, path in config_paths("theme-style") if path.is_file()
+                     for argument in ("--css-override", str(path))]
+    subprocess.run([sys.executable, str(libexec_root() / "ctlst-theme-render"),
+                    str(catalog / name), str(catalog), str(output), str(override),
+                    *css_arguments], check=True)
+
+
+def reload_session():
+    if check():
+        return 1
+    render_assets()
+    render_sway_config()
+    subprocess.run(["swaymsg", "-r", "reload"], check=True)
+    subprocess.run([str(libexec_root() / "ctlst-wallpaper"), "apply"], check=True)
+    if shutil.which("makoctl"):
+        subprocess.run(["makoctl", "reload"], check=False)
+    for name, command in (("home", "T"), ("dock", "T"), ("shade", "T"),
+                          ("overview", "R"), ("action", "R"), ("lock", "T"),
+                          ("drawer", "T"), ("bar", "R")):
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as client:
+            try:
+                client.sendto(command.encode(), str(runtime_root() / f"ctlst-{name}.sock"))
+            except (FileNotFoundError, ConnectionRefusedError):
+                pass
+    return 0
+
+
+def session_processes(token):
+    marker = f"CTLST_SESSION_ID={token}".encode()
+    for process in Path("/proc").glob("[0-9]*"):
+        try:
+            if process.stat().st_uid == os.getuid() and marker in (process / "environ").read_bytes().split(b"\0"):
+                yield int(process.name)
+        except (OSError, ValueError):
+            pass
+
+
+def cleanup_session(token):
+    # Sway gives each exec its own process group. An inherited unique token
+    # limits cleanup to this login, including reparented shell daemons.
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        for pid in session_processes(token):
+            try:
+                os.kill(pid, sig)
+            except ProcessLookupError:
+                pass
+        if sig == signal.SIGTERM:
+            deadline = time.monotonic() + 3
+            while list(session_processes(token)) and time.monotonic() < deadline:
+                time.sleep(0.1)
+
+
+def start() -> int:
+    if check() != 0:
+        return 1
+    parser, _ = read_layers("session")
+    compositor = parser.get("session", "compositor", fallback="sway").strip()
+    if compositor != "sway":
+        print(f"unsupported compositor: {compositor}", file=sys.stderr)
+        return 2
+    executable = shutil.which(compositor)
+    if executable is None:
+        print(f"required compositor is not installed: {compositor}", file=sys.stderr)
+        return 127
+    try:
+        render_assets()
+        config = render_sway_config()
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        print(f"cannot prepare CTLST Sway configuration: {error}", file=sys.stderr)
+        return 1
+
+    environment = component_environment()
+    environment["CTLST_DATA_DIR"] = str(data_root())
+    environment.setdefault("CTLST_LIBEXEC_DIR", "/usr/libexec/ctlst-shell")
+    environment["XDG_CURRENT_DESKTOP"] = "sway"
+    environment["XDG_SESSION_DESKTOP"] = "ctlst"
+    environment["XDG_SESSION_TYPE"] = "wayland"
+    token = uuid.uuid4().hex
+    environment["CTLST_SESSION_ID"] = token
+    renderer = parser.get("session", "renderer", fallback="auto").strip()
+    if renderer and renderer != "auto":
+        environment["WLR_RENDERER"] = renderer
+    # Own the compositor process group so logout also stops its shell surfaces.
+    process = subprocess.Popen([executable, "--config", str(config)],
+                               env=environment, start_new_session=True)
+    def stop(_signal, _frame):
+        process.terminate()
+    previous = {sig: signal.signal(sig, stop) for sig in (signal.SIGTERM, signal.SIGINT)}
+    try:
+        return process.wait()
+    finally:
+        cleanup_session(token)
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
+def edit(scope: str) -> int:
+    editor = os.environ.get("VISUAL") or os.environ.get("EDITOR")
+    if not editor:
+        print("set $VISUAL or $EDITOR to use config edit", file=sys.stderr)
+        return 2
+    command = shlex.split(editor)
+    if not command or shutil.which(command[0]) is None:
+        print(f"configured editor is not executable: {editor}", file=sys.stderr)
+        return 2
+    path = user_path(scope)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        source = config_paths(scope)[0][1]
+        template = source.read_text(encoding="utf-8") if source.is_file() else ""
+        # Exclusive creation never overwrites a concurrent edit or follows a
+        # dangling symlink supplied as the user dotfile.
+        with path.open("x", encoding="utf-8") as stream:
+            stream.write(template)
+    return subprocess.call([*command, str(path)])
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="ctlst-session")
+    command = parser.add_subparsers(dest="command", required=True)
+    command.add_parser("start", help="start the CTLST session on upstream Sway")
+    command.add_parser("reload", help="apply Sway, input and theme dotfiles; gesture settings apply at login")
+    config = command.add_parser("config", help="inspect layered configuration")
+    config_command = config.add_subparsers(dest="config_command", required=True)
+    show_parser = config_command.add_parser("show", help="print a user dotfile")
+    show_parser.add_argument("scope", type=known_scope)
+    paths_parser = config_command.add_parser("paths", help="print load order")
+    paths_parser.add_argument("scope", type=known_scope, nargs="?")
+    effective_parser = config_command.add_parser("effective", help="print merged values")
+    effective_parser.add_argument("scope", type=known_scope)
+    config_command.add_parser("check", help="validate configuration syntax")
+    edit_parser = config_command.add_parser("edit", help="open a user dotfile")
+    edit_parser.add_argument("scope", type=known_scope)
+    return parser
+
+
+def main() -> int:
+    arguments = build_parser().parse_args()
+    if arguments.command == "start":
+        return start()
+    if arguments.command == "reload":
+        return reload_session()
+    if arguments.config_command == "show":
+        return show(arguments.scope)
+    if arguments.config_command == "paths":
+        return paths_command(arguments.scope)
+    if arguments.config_command == "effective":
+        return effective(arguments.scope)
+    if arguments.config_command == "check":
+        return check()
+    if arguments.config_command == "edit":
+        return edit(arguments.scope)
+    return 2
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (ValueError, OSError, configparser.Error, subprocess.CalledProcessError) as error:
+        print(f"ctlst-session: {error}", file=sys.stderr)
+        raise SystemExit(1)

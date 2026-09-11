@@ -1,0 +1,441 @@
+#!/usr/bin/env python3
+
+import cairo
+from ctypes import CDLL
+
+# GTK4 Layer Shell must be loaded before PyGObject imports GTK/Wayland.
+CDLL("libgtk4-layer-shell.so.0")
+
+import gi
+import os
+os.environ.setdefault("GSK_RENDERER", "gl")
+import signal
+import socket
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Gdk", "4.0")
+gi.require_version("Gsk", "4.0")
+gi.require_version("Graphene", "1.0")
+gi.require_version("Pango", "1.0")
+gi.require_version("Gtk4LayerShell", "1.0")
+from gi.repository import Gdk, GLib, Gtk, Gtk4LayerShell, Gsk, Graphene, Pango
+
+
+SOCKET_NAME = "ctlst-window-drop.sock"
+THEME_FILE = os.path.join(os.environ.get("CTLST_GENERATED_DIR",
+    os.path.join(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"),
+                 "ctlst-shell/generated")), "theme.env")
+SIDE_MIN_WIDTH = 58
+SIDE_MAX_WIDTH = 72
+SIDE_MIN_HEIGHT = 124
+SIDE_MAX_HEIGHT = 168
+CHARM_SIDE_MARGIN = 12
+CHARM_TOP_MARGIN = 12
+CHARM_HEIGHT = 58
+CHARM_MIN_WIDTH = 48
+CHARM_MAX_WIDTH = 70
+CHARM_GAP = 7
+CHARM_NEW_WIDTH = 52
+CLOSE_WIDTH = 160
+CLOSE_HEIGHT = 56
+CLOSE_BOTTOM_MARGIN = 18
+
+CSS = b"""
+window#ctlst-window-drop {
+  background: transparent;
+}
+"""
+
+DEFAULT_PALETTE = {
+    "panel": "fffdf7ff",
+    "panel_alt": "dce8efff",
+    "line": "c7c9c2ff",
+    "accent": "355f71ff",
+    "accent_soft": "cce5f0ff",
+    "warm": "7b5e7bff",
+    "danger": "ba1a1aff",
+    "danger_active": "d73329ff",
+    "text": "1b1c1aff",
+    "on_danger": "fffdf7ff",
+}
+
+
+def rgba(value, fallback):
+    value = value.strip().lstrip("#")
+    if len(value) not in (6, 8):
+        value = fallback
+    if len(value) == 6:
+        value += "ff"
+    try:
+        channels = [int(value[index : index + 2], 16) for index in range(0, 8, 2)]
+    except ValueError:
+        return rgba(fallback, "000000ff")
+    return tuple(channel / 255 for channel in channels)
+
+
+
+
+class DropCanvas(Gtk.Widget):
+    def __init__(self, overlay):
+        super().__init__()
+        self.overlay = overlay
+        self.set_hexpand(True)
+        self.set_vexpand(True)
+
+    def do_snapshot(self, snapshot):
+        self.overlay.draw(self, snapshot, self.get_width(), self.get_height())
+
+class DropOverlay(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id="dev.ctlst.WindowDrop")
+        self.window = None
+        self.canvas = None
+        self.active = "N"
+        self.workspace = (0, 44, 480, 862)
+        self.workspaces = []
+        self.focused_workspace = -1
+        self.runtime_dir = os.environ.get(
+            "XDG_RUNTIME_DIR",
+            f"/run/user/{os.getuid()}",
+        )
+        self.socket_path = os.path.join(self.runtime_dir, SOCKET_NAME)
+        self.control_socket = None
+        self.io_source = None
+        self.application_held = False
+        self.palette = {}
+        self.labels = {}
+        self.load_palette()
+
+    def load_palette(self):
+        values = {}
+        try:
+            with open(THEME_FILE, encoding="ascii") as theme_file:
+                for line in theme_file:
+                    key, separator, value = line.strip().partition("=")
+                    if separator:
+                        values[key] = value
+        except OSError:
+            pass
+
+        self.palette = {
+            "selected_text": rgba(values.get("SHELL_SELECTED_TEXT", ""), "ffffffff"),
+            "panel": rgba(
+                values.get(
+                    "SHELL_PANEL",
+                    values.get("SHELL_SELECTED_TEXT", ""),
+                ),
+                DEFAULT_PALETTE["panel"],
+            ),
+            "panel_alt": rgba(
+                values.get(
+                    "SHELL_PANEL_ALT",
+                    values.get("SHELL_OVERLAY", ""),
+                ),
+                DEFAULT_PALETTE["panel_alt"],
+            ),
+            "line": rgba(
+                values.get("SHELL_LINE", ""),
+                DEFAULT_PALETTE["line"],
+            ),
+            "accent": rgba(
+                values.get("SHELL_ACCENT", ""),
+                DEFAULT_PALETTE["accent"],
+            ),
+            "accent_soft": rgba(
+                values.get(
+                    "SHELL_ACCENT_SOFT",
+                    values.get("SHELL_OVERLAY", ""),
+                ),
+                DEFAULT_PALETTE["accent_soft"],
+            ),
+            "warm": rgba(
+                values.get("SHELL_WARM", ""),
+                DEFAULT_PALETTE["warm"],
+            ),
+            "danger": rgba(
+                values.get("SHELL_DANGER", ""),
+                DEFAULT_PALETTE["danger"],
+            ),
+            "danger_active": rgba(
+                values.get("SHELL_DANGER_ACTIVE", ""),
+                DEFAULT_PALETTE["danger_active"],
+            ),
+            "text": rgba(
+                values.get("SHELL_TEXT", ""),
+                DEFAULT_PALETTE["text"],
+            ),
+            "on_danger": rgba(
+                values.get(
+                    "SHELL_SELECTED_TEXT",
+                    values.get("SHELL_PANEL", ""),
+                ),
+                DEFAULT_PALETTE["on_danger"],
+            ),
+        }
+
+    def do_activate(self):
+        if self.window is not None:
+            return
+
+        provider = Gtk.CssProvider()
+        provider.load_from_data(CSS)
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(),
+            provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+        )
+
+        self.window = Gtk.ApplicationWindow(application=self)
+        self.window.set_name("ctlst-window-drop")
+        self.window.set_decorated(False)
+        self.window.set_focusable(False)
+
+        Gtk4LayerShell.init_for_window(self.window)
+        Gtk4LayerShell.set_namespace(self.window, "ctlst-window-drop")
+        Gtk4LayerShell.set_layer(self.window, Gtk4LayerShell.Layer.OVERLAY)
+        Gtk4LayerShell.set_keyboard_mode(
+            self.window,
+            Gtk4LayerShell.KeyboardMode.NONE,
+        )
+        Gtk4LayerShell.set_exclusive_zone(self.window, -1)
+        for edge in (
+            Gtk4LayerShell.Edge.LEFT,
+            Gtk4LayerShell.Edge.RIGHT,
+            Gtk4LayerShell.Edge.TOP,
+            Gtk4LayerShell.Edge.BOTTOM,
+        ):
+            Gtk4LayerShell.set_anchor(self.window, edge, True)
+
+        self.canvas = DropCanvas(self)
+        self.canvas.update_property([Gtk.AccessibleProperty.LABEL], ["Move window"])
+        self.window.set_child(self.canvas)
+        self.window.connect("realize", self.make_input_transparent)
+
+        self.open_socket()
+        self.hold()
+        self.application_held = True
+
+    def open_socket(self):
+        try:
+            os.unlink(self.socket_path)
+        except FileNotFoundError:
+            pass
+        self.control_socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        self.control_socket.setblocking(False)
+        self.control_socket.bind(self.socket_path)
+        os.chmod(self.socket_path, 0o600)
+        self.io_source = GLib.io_add_watch(
+            self.control_socket.fileno(),
+            GLib.IO_IN,
+            self.receive_message,
+        )
+
+    def make_input_transparent(self, _window):
+        surface = self.window.get_surface()
+        if surface is not None:
+            surface.set_input_region(cairo.Region())
+
+    def receive_message(self, _fd, _condition):
+        while True:
+            try:
+                message = self.control_socket.recv(2048).decode(
+                    "ascii",
+                    errors="ignore",
+                )
+            except BlockingIOError:
+                break
+
+            parts = message.split()
+            if not parts:
+                continue
+            if parts[0] == "S" and len(parts) >= 6:
+                try:
+                    self.workspace = tuple(int(value) for value in parts[1:5])
+                    self.focused_workspace = int(parts[5])
+                except ValueError:
+                    continue
+                self.workspaces = parts[6:]
+                self.labels.clear()
+                self.active = "N"
+                self.window.set_visible(True)
+                self.canvas.queue_draw()
+            elif parts[0] == "A" and len(parts) == 2:
+                target = parts[1]
+                self.active = (
+                    target
+                    if target in {"L", "R", "T", "X", "N"}
+                    or (target.startswith("W") and target[1:].isdigit())
+                    else "N"
+                )
+                self.canvas.queue_draw()
+                self.canvas.update_property([Gtk.AccessibleProperty.LABEL], [self.selection_label()])
+            elif parts[0] == "H":
+                self.window.set_visible(False)
+                if self.application_held:
+                    self.release()
+                    self.application_held = False
+                GLib.idle_add(self.quit)
+            elif parts[0] == "T":
+                self.load_palette()
+                self.canvas.queue_draw()
+        return GLib.SOURCE_CONTINUE
+
+    @staticmethod
+    def color(value):
+        return Gdk.RGBA(red=value[0], green=value[1], blue=value[2], alpha=value[3])
+
+    def panel(self, snapshot, x, y, width, height, radius, fill, outline=None, thickness=1):
+        bounds = Graphene.Rect().init(x, y, width, height)
+        rounded = Gsk.RoundedRect()
+        rounded.init_from_rect(bounds, radius)
+        snapshot.push_rounded_clip(rounded)
+        snapshot.append_color(self.color(fill), bounds)
+        snapshot.pop()
+        if outline is not None:
+            snapshot.append_border(rounded, [thickness] * 4, [self.color(outline)] * 4)
+
+    def label(self, snapshot, text, x, y, width, height, size, color):
+        key = (text, int(width), size)
+        layout = self.labels.get(key)
+        if layout is None:
+            layout = self.canvas.create_pango_layout(text)
+            font = Pango.FontDescription.from_string("Noto Sans Medium")
+            font.set_absolute_size(size * Pango.SCALE)
+            layout.set_font_description(font)
+            layout.set_width(max(1, int(width)) * Pango.SCALE)
+            layout.set_ellipsize(Pango.EllipsizeMode.END)
+            layout.set_single_paragraph_mode(True)
+            layout.set_alignment(Pango.Alignment.CENTER)
+            self.labels[key] = layout
+        _, text_height = layout.get_pixel_size()
+        snapshot.save()
+        snapshot.translate(Graphene.Point().init(x, y + (height - text_height) / 2))
+        snapshot.append_layout(layout, self.color(color))
+        snapshot.restore()
+
+    @staticmethod
+    def workspace_label(name):
+        if name == "1":
+            return "Home"
+        if name.startswith("app:"):
+            return name[4:]
+        return name
+
+    def charm_geometry(self, workspace_x, workspace_width):
+        count = len(self.workspaces)
+        available = (workspace_width - CHARM_SIDE_MARGIN * 2 -
+                     CHARM_NEW_WIDTH - CHARM_GAP * count)
+        charm_width = available // count if count else CHARM_MAX_WIDTH
+        charm_width = max(CHARM_MIN_WIDTH, min(CHARM_MAX_WIDTH, charm_width))
+        row_width = count * (charm_width + CHARM_GAP) + CHARM_NEW_WIDTH
+        return workspace_x + (workspace_width - row_width) / 2, charm_width, row_width
+
+    def draw_charm(self, snapshot, x, y, width, label, selected, focused=False):
+        fill = self.palette["accent"] if selected else self.palette["panel"]
+        outline = self.palette["accent"] if selected or focused else self.palette["line"]
+        text = self.palette["selected_text"] if selected else self.palette["text"]
+        self.panel(snapshot, x, y, width, CHARM_HEIGHT, 18, fill, outline,
+                   2 if selected or focused else 1)
+        self.label(snapshot, label, x + 5, y, width - 10, CHARM_HEIGHT, 14, text)
+
+    def selection_label(self):
+        names = {"N": "Move window", "L": "Previous workspace", "R": "Next workspace",
+                 "T": "New workspace", "X": "Close window"}
+        if self.active in names:
+            return names[self.active]
+        if self.active.startswith("W") and self.active[1:].isdigit():
+            index = int(self.active[1:])
+            if index < len(self.workspaces):
+                return "Move to " + self.workspace_label(self.workspaces[index])
+        return "Move window"
+
+    def draw(self, _area, snapshot, width, height):
+        workspace_x, workspace_y, workspace_width, workspace_height = self.workspace
+        workspace_x = max(0, min(workspace_x, width))
+        workspace_y = max(0, min(workspace_y, height))
+        workspace_width = max(1, min(workspace_width, width - workspace_x))
+        workspace_height = max(1, min(workspace_height, height - workspace_y))
+        side_width = max(SIDE_MIN_WIDTH, min(SIDE_MAX_WIDTH, int(workspace_width * .18)))
+        target_height = max(SIDE_MIN_HEIGHT, min(SIDE_MAX_HEIGHT, int(workspace_height * .44)))
+        target_height = min(target_height, max(1, workspace_height - 32))
+        target_y = workspace_y + (workspace_height - target_height) / 2
+        for direction, x, glyph in (("L", workspace_x + 8, "‹"),
+                                   ("R", workspace_x + workspace_width - side_width + 8, "›")):
+            selected = self.active == direction
+            fill = self.palette["accent"] if selected else self.palette["panel_alt"]
+            ink = self.palette["selected_text"] if selected else self.palette["text"]
+            self.panel(snapshot, x, target_y, side_width - 16, target_height,
+                       (side_width - 16) / 2, fill, self.palette["line"])
+            self.label(snapshot, glyph, x, target_y, side_width - 16, target_height, 30, ink)
+
+        charm_left, charm_width, row_width = self.charm_geometry(workspace_x, workspace_width)
+        charm_top = workspace_y + CHARM_TOP_MARGIN
+        self.panel(snapshot, charm_left - 7, charm_top - 7, row_width + 14,
+                   CHARM_HEIGHT + 14, 25, self.palette["panel_alt"])
+        for index, workspace in enumerate(self.workspaces):
+            self.draw_charm(snapshot, charm_left + index * (charm_width + CHARM_GAP),
+                            charm_top, charm_width, self.workspace_label(workspace),
+                            self.active == f"W{index}", self.focused_workspace == index)
+        self.draw_charm(snapshot, charm_left + len(self.workspaces) * (charm_width + CHARM_GAP),
+                        charm_top, CHARM_NEW_WIDTH, "+", self.active == "T")
+        if workspace_height >= 280:
+            # Descriptive feedback sits below the existing targets, not over them.
+            caption_width = min(280, workspace_width - 48)
+            caption_left = workspace_x + (workspace_width - caption_width) / 2
+            self.panel(snapshot, caption_left, charm_top + CHARM_HEIGHT + 14,
+                       caption_width, 32, 16, self.palette["panel"])
+            self.label(snapshot, self.selection_label(), caption_left + 8,
+                       charm_top + CHARM_HEIGHT + 14, caption_width - 16, 32,
+                       14, self.palette["text"])
+
+        close_x = workspace_x + (workspace_width - CLOSE_WIDTH) / 2
+        close_y = workspace_y + workspace_height - CLOSE_BOTTOM_MARGIN - CLOSE_HEIGHT
+        fill = self.palette["danger_active"] if self.active == "X" else self.palette["danger"]
+        self.panel(snapshot, close_x, close_y, CLOSE_WIDTH, CLOSE_HEIGHT, 22, fill)
+        # Choose contrast against the actual normal/selected danger fill.
+        on_danger = max(((0, 0, 0, 1), (1, 1, 1, 1)),
+                        key=lambda color: self.contrast(color, fill))
+        if self.contrast(self.palette["on_danger"], fill) >= 4.5:
+            on_danger = self.palette["on_danger"]
+        self.label(snapshot, "Close window", close_x + 8, close_y,
+                   CLOSE_WIDTH - 16, CLOSE_HEIGHT, 15, on_danger)
+
+    @staticmethod
+    def contrast(first, second):
+        def luminance(color):
+            linear = [channel / 12.92 if channel <= .04045 else
+                      ((channel + .055) / 1.055) ** 2.4 for channel in color[:3]]
+            return sum(channel * weight for channel, weight in zip(linear, (.2126, .7152, .0722)))
+        a, b = sorted((luminance(first), luminance(second)))
+        return (b + .05) / (a + .05)
+
+    def cleanup(self):
+        if self.io_source is not None:
+            GLib.source_remove(self.io_source)
+            self.io_source = None
+        if self.control_socket is not None:
+            self.control_socket.close()
+            self.control_socket = None
+        try:
+            os.unlink(self.socket_path)
+        except FileNotFoundError:
+            pass
+
+
+def main():
+    application = DropOverlay()
+    def stop_application(_signal_number, _frame):
+        if application.application_held:
+            application.release()
+            application.application_held = False
+        application.quit()
+    signal.signal(signal.SIGINT, stop_application)
+    signal.signal(signal.SIGTERM, stop_application)
+    try:
+        return application.run(None)
+    finally:
+        application.cleanup()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+case "${1:-}" in
+    -h|--help) printf '%s\n' 'Portable shell extras: ctlst-widget guide | ctlst-widget reload' ;;
+esac
+case "${1:-}" in
+    guide) exec cat "${CTLST_DATA_DIR:-/usr/share/ctlst-shell}/docs/WIDGETS.md" ;;
+    reload) exec "${CTLST_LIBEXEC_DIR:-/usr/libexec/ctlst-shell}/ctlst-widget-reload" ;;
+    *) exec python3 "${CTLST_LIBEXEC_DIR:-/usr/libexec/ctlst-shell}/widget-tools/ctlst-widget" "$@" ;;
+esac

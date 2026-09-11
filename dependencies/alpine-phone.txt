@@ -1,0 +1,16 @@
+# Full phone integrations; not required for a desktop-only shell preview.
+dolphin-emu
+dolphin-emu-udev
+feedbackd
+gst-plugins-bad
+gst-plugins-base
+gst-plugins-good
+gstreamer
+iio-sensor-proxy
+libssc
+mgba-qt
+modemmanager
+pipewire-spa-bluez
+pipewire-spa-libcamera
+snapshot
+tailscale

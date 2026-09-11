@@ -1,0 +1,30 @@
+[main]
+font=Noto Sans:size=12
+terminal=foot --config=~/.config/sway-touch/foot.ini ~/.local/share/sway-touch/scripts/terminal-shell
+width=48
+lines=8
+horizontal-pad=18
+vertical-pad=14
+inner-pad=8
+layer=overlay
+exit-on-keyboard-focus-loss=no
+icon-theme=@ICON_THEME@
+
+[colors]
+background=@SHELL_PANEL@
+text=@SHELL_TEXT@
+prompt=@SHELL_TEXT@
+match=@SHELL_ACCENT@
+selection=@SHELL_ACCENT_SOFT@
+selection-text=@SHELL_TEXT@
+selection-match=@SHELL_ACCENT@
+border=@SHELL_PANEL@
+
+[border]
+width=0
+radius=24
+
+[key-bindings]
+prev-with-wrap=ISO_Left_Tab XF86AudioRaiseVolume
+next-with-wrap=XF86AudioLowerVolume
+execute=Return KP_Enter Control+y XF86PowerOff

@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+"""Shared keyboard/pointer navigation entry point."""
+import os
+import socket
+import subprocess
+import sys
+from ctlst_config import libexec_root, runtime_root
+
+
+def send(name, message):
+    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as client:
+        client.sendto(message.encode(), str(runtime_root() / name))
+
+
+def main():
+    action = sys.argv[1]
+    if (runtime_root() / "ctlstlock.visible").exists() and action != "unlock":
+        return 0
+    if action in ("next", "prev"):
+        subprocess.run([str(libexec_root() / "workspace-step"), action], check=True)
+        send("ctlst-dock.sock", "E")
+        send("ctlst-dock.sock", "H")
+    elif action == "home":
+        subprocess.run([str(libexec_root() / "ctlst-workspaced"), "home"], check=True)
+    elif action == "overview":
+        send("ctlst-overview.sock", "H" if (runtime_root() / "ctlstoverview.visible").exists() else "S")
+    elif action == "drawer":
+        subprocess.run([str(libexec_root() / "ctlstdrawer")], check=True)
+    elif action == "shade":
+        subprocess.run([str(libexec_root() / "ctlstshade"), "show"], check=True)
+    elif action == "back":
+        if (runtime_root() / "ctlstdrawer.visible").exists():
+            subprocess.run([str(libexec_root() / "ctlstdrawer"), "close"], check=True)
+        elif (runtime_root() / "ctlstoverview.visible").exists():
+            send("ctlst-overview.sock", "H")
+        elif (runtime_root() / "ctlstshade.visible").exists():
+            send("ctlst-shade.sock", "H")
+        else:
+            subprocess.run(["wtype", "-k", "Escape"], check=True)
+    elif action in ("lock", "unlock"):
+        subprocess.run([str(libexec_root() / "ctlstlock"), action], check=True)
+    elif action == "keyboard":
+        keyboard = libexec_root() / "keyboard-control"
+        if not keyboard.is_file():
+            subprocess.run(["notify-send", "Keyboard is not installed", "Install the optional keyboard package."], check=False)
+            return 0
+        subprocess.run([str(keyboard), "toggle"], check=True)
+    else:
+        raise ValueError("unknown shell action")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, ValueError, IndexError, subprocess.CalledProcessError) as error:
+        print(f"ctlst-control: {error}", file=sys.stderr)
+        raise SystemExit(1)

@@ -1,0 +1,208 @@
+#!/usr/bin/env python3
+"""Plain-text Home note with live preview and a configurable external editor."""
+import argparse
+import configparser
+import json
+import os
+from pathlib import Path
+import selectors
+import shutil
+import stat
+import subprocess
+import sys
+import textwrap
+
+
+def settings():
+    config = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "ctlst"
+    data = Path(os.environ.get("CTLST_DATA_DIR", "/usr/share/ctlst-shell"))
+    profiles = Path(os.environ.get("CTLST_PROFILE_DIR", "/usr/lib/ctlst-shell/profile.d"))
+    paths = [data / "defaults/notes.conf"]
+    if profiles.is_dir():
+        paths += [p / "notes.conf" for p in sorted(profiles.iterdir()) if p.is_dir()]
+    paths += [Path(os.environ.get("CTLST_SYSTEM_CONFIG_DIR", "/etc/ctlst")) / "notes.conf", config / "notes.conf"]
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.read_dict({"notes": {"file": "notes.txt", "editor": "[]"}})
+    for path in paths:
+        if path.exists():
+            with path.open(encoding="utf-8") as stream:
+                parser.read_file(stream)
+    if not parser["notes"]["file"].strip():
+        raise ValueError("Notes file must not be empty")
+    filename = Path(parser["notes"]["file"]).expanduser()
+    if not filename.is_absolute():
+        filename = config / filename
+    editor = json.loads(parser["notes"]["editor"])
+    if not isinstance(editor, list) or any(not isinstance(x, str) or not x or "\0" in x for x in editor):
+        raise ValueError("notes.editor must be a JSON command-argument array")
+    return filename, editor
+
+
+def editor_command(configured):
+    if configured:
+        if not shutil.which(configured[0]):
+            raise ValueError("Configured Notes editor is not installed")
+        return configured
+    if shutil.which("xdg-mime") and shutil.which("gio"):
+        try:
+            desktop = subprocess.check_output(["xdg-mime", "query", "default", "text/plain"],
+                                              text=True, timeout=3).strip()
+            roots = [Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")]
+            roots += [Path(p) for p in os.environ.get("XDG_DATA_DIRS", "/usr/local/share:/usr/share").split(":")]
+            if desktop and desktop != "dev.ctlst.Notes.desktop" and Path(desktop).name == desktop:
+                for root in roots:
+                    path = root / "applications" / desktop
+                    if path.is_file():
+                        entry = configparser.ConfigParser(interpolation=None)
+                        entry.read(path, encoding="utf-8")
+                        # GIO's terminal search does not recognize Foot. A
+                        # Terminal=true handler may be installed but unusable;
+                        # use our explicit terminal fallback below instead.
+                        if not entry.getboolean("Desktop Entry", "Terminal", fallback=False):
+                            return ["gio", "launch", str(path)]
+        except (OSError, ValueError, configparser.Error, subprocess.SubprocessError):
+            pass
+    for gui in ("gnome-text-editor", "mousepad", "kate", "kwrite", "gedit"):
+        if shutil.which(gui):
+            return [gui]
+    if shutil.which("foot"):
+        for terminal in ("nano", "nvim", "vi"):
+            if shutil.which(terminal):
+                return ["foot", "--app-id=dev.ctlst.Notes", "-e", terminal]
+    raise ValueError("No text editor installed; set editor in ~/.config/ctlst/notes.conf")
+
+
+def edit_note():
+    filename, configured = settings()
+    command = editor_command(configured)
+    filename.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        fd = os.open(filename, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.close(fd)
+    except FileExistsError:
+        pass
+    if not filename.is_file():
+        raise ValueError("Notes path is not a regular file")
+    command = [*command, str(filename)]
+    # Home/drawer already launch our desktop entry through app-run. Re-entering
+    # it here prepares a second workspace and can focus away from the editor.
+    result = subprocess.call(command)
+    if result:
+        raise ValueError("The configured editor failed to open the note")
+    return 0
+
+
+def preview(filename):
+    try:
+        fd = os.open(filename, os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                return "Notes path is not a file", "Check notes.conf"
+            content = os.read(fd, 8192).decode("utf-8", errors="replace")
+        finally:
+            os.close(fd)
+        content = "".join(c for c in content if c.isprintable() or c in "\n\t")
+        return content or "No notes yet", "Tap to edit"
+    except FileNotFoundError:
+        return "No notes yet", "Tap to create a note"
+    except OSError:
+        return "Cannot read note", "Check file permissions"
+
+
+def frame(sequence, width, height, content, footer):
+    width, height = max(80, min(width, 4096)), max(70, min(height, 4096))
+    columns = max(6, int((width - 28) / 9.75))
+    limit = min(40, max(0, int((height - 66) / 20)))
+    lines = []
+    for line in content.splitlines():
+        lines.extend(textwrap.wrap(line.expandtabs(4), columns) or [""])
+        if len(lines) > limit:
+            break
+    if len(lines) > limit:
+        lines = lines[:limit]
+        if lines:
+            lines[-1] = lines[-1][:max(1, columns-1)] + "…"
+    nodes = [{"type": "text", "x": 14, "y": 10, "text": "Notes", "size": 17,
+              "weight": "bold", "fill": "@ctlst_accent"}]
+    nodes += [{"type": "text", "x": 14, "y": 36+i*20, "text": line, "size": 15,
+               "fill": "@ctlst_text"} for i, line in enumerate(lines)]
+    nodes.append({"type": "text", "x": 14, "y": height-20, "text": footer[:columns],
+                  "size": 11, "fill": "@ctlst_muted"})
+    return {"ctlst_widget": 1, "type": "frame", "seq": sequence,
+            "view": {"width": width, "height": height, "background": "@ctlst_panel"}, "nodes": nodes}
+
+
+def serve():
+    visible, previous, sequence = True, None, 0
+    width, height = 200, 180
+    selector = selectors.DefaultSelector()
+    selector.register(sys.stdin, selectors.EVENT_READ)
+    pending = b""
+    while True:
+        force = False
+        closing = False
+        if selector.select(1 if visible else None):
+            data = os.read(sys.stdin.fileno(), 8192)
+            if not data:
+                return 0
+            pending += data
+            if len(pending) > 262144:
+                return 1
+            while b"\n" in pending:
+                raw, pending = pending.split(b"\n", 1)
+                try:
+                    message = json.loads(raw)
+                except (ValueError, UnicodeDecodeError):
+                    continue
+                if not isinstance(message, dict) or message.get("ctlst_widget") != 1:
+                    continue
+                kind = message.get("type")
+                if kind == "shutdown":
+                    closing = True
+                    break
+                if kind == "visibility":
+                    visible = bool(message.get("visible"))
+                    force |= visible
+                elif kind in ("hello", "configure"):
+                    for name in ("width", "height"):
+                        value = message.get(name)
+                        if isinstance(value, (int, float)) and 0 < value <= 4096:
+                            if name == "width": width = int(value)
+                            else: height = int(value)
+                    force = True
+        if not visible:
+            if closing:
+                return 0
+            continue
+        try:
+            filename, _ = settings()
+            content, footer = preview(filename)
+        except (ValueError, OSError, configparser.Error):
+            content, footer = "Notes configuration error", "Check notes.conf"
+        current = (width, height, content, footer)
+        if force or current != previous:
+            print(json.dumps(frame(sequence, *current), separators=(",", ":")), flush=True)
+            previous = current
+            sequence += 1
+        if closing:
+            return 0
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--edit", action="store_true", help="Edit the Home note")
+    args = parser.parse_args()
+    try:
+        return edit_note() if args.edit else serve()
+    except (ValueError, OSError, configparser.Error) as error:
+        print(f"Notes: {error}", file=sys.stderr)
+        if args.edit and shutil.which("notify-send"):
+            try:
+                subprocess.run(["notify-send", "Notes could not open", str(error)], timeout=3, check=False)
+            except (OSError, subprocess.SubprocessError):
+                pass
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,337 @@
+#!/usr/bin/env python3
+"""Safe scaffold, validation, and user registration for CTLST widgets."""
+
+from __future__ import annotations
+
+import argparse
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+SCAFFOLD = SCRIPT_DIR / "new_widget.py"
+VALIDATOR = SCRIPT_DIR / "validate_widget.py"
+ID_RE = re.compile(r"[a-z0-9][a-z0-9_-]*\Z")
+BUILTIN_IDS = {"clock", "calendar", "weather", "glance"}
+
+
+def fail(message: str) -> int:
+    print(f"ctlst-widget: {message}", file=sys.stderr)
+    return 2
+
+
+def parse_descriptor(path: Path) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or line.startswith("-"):
+            continue
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        result[key.strip()] = value.strip().strip("'\"")
+    return result
+
+
+def check_id(widget_id: str) -> None:
+    if not ID_RE.fullmatch(widget_id):
+        raise ValueError("widget ID must match [a-z0-9][a-z0-9_-]*")
+    if widget_id in BUILTIN_IDS:
+        raise ValueError(f"{widget_id} is reserved for a built-in Home widget")
+
+
+def config_root(value: str | None) -> Path:
+    if value:
+        return Path(value).expanduser()
+    return Path(os.environ.get("XDG_CONFIG_HOME", "~/.config")).expanduser() / "ctlst"
+
+
+def bin_root(value: str | None) -> Path:
+    if value:
+        return Path(value).expanduser()
+    return Path.home() / ".local" / "bin"
+
+
+def atomic_write(path: Path, data: bytes, mode: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary_path = Path(temporary)
+    try:
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def run_validator(descriptor: Path, helper: Path) -> None:
+    subprocess.run(
+        [sys.executable, str(VALIDATOR), str(descriptor), "--exec", str(helper)],
+        check=True,
+    )
+
+
+def find_helper(descriptor: Path, executable: str, explicit: str | None) -> Path:
+    if explicit:
+        return Path(explicit).expanduser()
+    candidate = descriptor.parent / executable
+    if candidate.is_file():
+        return candidate
+    found = shutil.which(executable)
+    if found:
+        return Path(found)
+    raise ValueError(f"helper not found: {executable}")
+
+
+def normalized_descriptor(descriptor: Path, helper_path: Path) -> bytes:
+    lines = descriptor.read_text(encoding="utf-8").splitlines(keepends=True)
+    # Display-manager sessions need not put ~/.local/bin on PATH.
+    executable = str(helper_path.resolve())
+    if any(c in executable for c in '\n\r"') or len(executable.encode()) >= 256:
+        raise ValueError("installed helper path cannot be represented by Home's descriptor")
+    replacement = f'exec: "{executable}"\n'
+    for index, raw in enumerate(lines):
+        if raw.lstrip().startswith("exec:"):
+            indent = raw[: len(raw) - len(raw.lstrip())]
+            lines[index] = indent + replacement
+            return "".join(lines).encode("utf-8")
+    raise ValueError("descriptor has no exec field")
+
+
+def _line_indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
+def enable_in_home_config(path: Path, widget_id: str) -> None:
+    """Add one enabled item while preserving the constrained YAML file."""
+    if path.exists():
+        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    else:
+        lines = []
+    widgets_start = next(
+        (index for index, raw in enumerate(lines)
+         if _line_indent(raw) == 0 and raw.strip() == "widgets:"),
+        None,
+    )
+    if widgets_start is not None:
+        widgets_end = len(lines)
+        for index in range(widgets_start + 1, len(lines)):
+            if lines[index].strip() and _line_indent(lines[index]) == 0:
+                widgets_end = index
+                break
+        enabled_index = None
+        enabled_indent = None
+        for index in range(widgets_start + 1, widgets_end):
+            stripped = lines[index].strip()
+            indent = _line_indent(lines[index])
+            if indent > 0 and stripped.startswith("enabled:"):
+                enabled_index = index
+                enabled_indent = indent
+                break
+        if enabled_index is not None:
+            value = lines[enabled_index].split(":", 1)[1].strip()
+            if value == "[]":
+                lines[enabled_index] = " " * enabled_indent + "enabled:\n"
+                lines.insert(
+                    enabled_index + 1,
+                    " " * (enabled_indent + 2) + f"- {widget_id}\n",
+                )
+            else:
+                list_end = enabled_index + 1
+                while list_end < widgets_end:
+                    raw = lines[list_end]
+                    stripped = raw.strip()
+                    if stripped and _line_indent(raw) <= enabled_indent:
+                        break
+                    if stripped.startswith("-") and (
+                        stripped[1:].strip().strip("'\"") == widget_id
+                    ):
+                        return
+                    list_end += 1
+                lines.insert(
+                    list_end,
+                    " " * (enabled_indent + 2) + f"- {widget_id}\n",
+                )
+            atomic_write(path, "".join(lines).encode("utf-8"), 0o600)
+            return
+        lines[widgets_end:widgets_end] = ["  enabled:\n", f"    - {widget_id}\n"]
+        atomic_write(path, "".join(lines).encode("utf-8"), 0o600)
+        return
+
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] += "\n"
+    lines.extend(["\n", "widgets:\n", "  enabled:\n", f"    - {widget_id}\n"])
+    atomic_write(path, "".join(lines).encode("utf-8"), 0o600)
+
+
+def disable_in_home_config(path: Path, widget_id: str) -> None:
+    if not path.exists():
+        return
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    kept: list[str] = []
+    in_widgets = False
+    in_enabled = False
+    for raw in lines:
+        stripped = raw.strip()
+        indent = _line_indent(raw)
+        if indent == 0 and stripped:
+            in_widgets = stripped == "widgets:"
+            in_enabled = False
+        elif in_widgets and indent > 0 and stripped.startswith("enabled:"):
+            in_enabled = True
+        elif in_widgets and in_enabled and indent > 0 and stripped.startswith("-"):
+            item = stripped[1:].strip().strip("'\"")
+            if item == widget_id:
+                continue
+        elif in_widgets and in_enabled and indent > 0 and stripped:
+            in_enabled = False
+        kept.append(raw)
+    atomic_write(path, "".join(kept).encode("utf-8"), 0o600)
+
+
+def install(args: argparse.Namespace) -> int:
+    descriptor = args.descriptor.expanduser().resolve()
+    if not descriptor.is_file():
+        return fail(f"descriptor not found: {descriptor}")
+    try:
+        data = parse_descriptor(descriptor)
+        widget_id = data["id"]
+        check_id(widget_id)
+        helper = find_helper(descriptor, data["exec"], args.helper)
+        if not helper.is_file() or not os.access(helper, os.X_OK):
+            raise ValueError(f"helper is not an executable file: {helper}")
+        run_validator(descriptor, helper)
+        helper_path = bin_root(args.bin_dir) / f"ctlst-widget-{widget_id}"
+        descriptor_bytes = normalized_descriptor(descriptor, helper_path)
+    except (KeyError, OSError, ValueError, subprocess.CalledProcessError) as error:
+        return fail(str(error))
+
+    root = config_root(args.config_dir)
+    widget_path = root / "widgets" / f"{widget_id}.yaml"
+    helper_path = bin_root(args.bin_dir) / f"ctlst-widget-{widget_id}"
+    if not args.force and (widget_path.exists() or helper_path.exists()):
+        return fail("refusing to replace an installed widget; use --force")
+    old_descriptor = widget_path.read_bytes() if widget_path.exists() else None
+    old_helper = helper_path.read_bytes() if helper_path.exists() else None
+    try:
+        atomic_write(helper_path, helper.read_bytes(), 0o755)
+        atomic_write(widget_path, descriptor_bytes, 0o600)
+        enable_in_home_config(root / "home.yaml", widget_id)
+    except OSError as error:
+        if old_helper is None:
+            helper_path.unlink(missing_ok=True)
+        else:
+            atomic_write(helper_path, old_helper, 0o755)
+        if old_descriptor is None:
+            widget_path.unlink(missing_ok=True)
+        else:
+            atomic_write(widget_path, old_descriptor, 0o600)
+        return fail(f"install rolled back: {error}")
+    print(f"installed {widget_id}")
+    print(f"  helper: {helper_path}")
+    print(f"  descriptor: {widget_path}")
+    print(f"  enabled: {root / 'home.yaml'}")
+    return 0
+
+
+def uninstall(args: argparse.Namespace) -> int:
+    try:
+        check_id(args.widget_id)
+    except ValueError as error:
+        return fail(str(error))
+    root = config_root(args.config_dir)
+    descriptor = root / "widgets" / f"{args.widget_id}.yaml"
+    helper = bin_root(args.bin_dir) / f"ctlst-widget-{args.widget_id}"
+    if not descriptor.exists() and not helper.exists():
+        return fail(f"widget is not installed: {args.widget_id}")
+    descriptor.unlink(missing_ok=True)
+    helper.unlink(missing_ok=True)
+    disable_in_home_config(root / "home.yaml", args.widget_id)
+    print(f"removed {args.widget_id}")
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="ctlst-widget")
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    scaffold = commands.add_parser("scaffold", help="create a widget starter")
+    scaffold.add_argument("widget_id")
+    scaffold.add_argument("--name")
+    scaffold.add_argument("--output", type=Path, default=Path("."))
+    scaffold.add_argument("--columns", type=int, default=2)
+    scaffold.add_argument("--rows", type=int, default=2)
+    scaffold.add_argument("--force", action="store_true")
+
+    validate = commands.add_parser("validate", help="validate a widget helper")
+    validate.add_argument("descriptor", type=Path)
+    validate.add_argument("--exec", dest="executable")
+    validate.add_argument("--timeout", type=float, default=2.0)
+
+    for name in ("install", "register"):
+        install_parser = commands.add_parser(name, help="install and enable a widget")
+        install_parser.add_argument("descriptor", type=Path)
+        install_parser.add_argument("--helper")
+        install_parser.add_argument("--config-dir")
+        install_parser.add_argument("--bin-dir")
+        install_parser.add_argument("--force", action="store_true")
+
+    remove = commands.add_parser("remove", aliases=["uninstall"], help="remove a widget")
+    remove.add_argument("widget_id")
+    remove.add_argument("--config-dir")
+    remove.add_argument("--bin-dir")
+    commands.add_parser("list", help="list installed user widgets").add_argument(
+        "--config-dir"
+    )
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    if args.command == "scaffold":
+        try:
+            check_id(args.widget_id)
+        except ValueError as error:
+            return fail(str(error))
+        command = [sys.executable, str(SCAFFOLD), args.widget_id, "--output", str(args.output)]
+        for flag, value in (("--name", args.name), ("--columns", args.columns), ("--rows", args.rows)):
+            if value is not None:
+                command.extend([flag, str(value)])
+        if args.force:
+            command.append("--force")
+        return subprocess.run(command).returncode
+    if args.command == "validate":
+        descriptor = args.descriptor.expanduser().resolve()
+        try:
+            data = parse_descriptor(descriptor)
+            check_id(data["id"])
+            helper = find_helper(descriptor, data["exec"], args.executable)
+            run_validator(descriptor, helper)
+        except (KeyError, OSError, ValueError, subprocess.CalledProcessError) as error:
+            return fail(str(error))
+        return 0
+    if args.command in {"install", "register"}:
+        return install(args)
+    if args.command in {"remove", "uninstall"}:
+        return uninstall(args)
+    root = config_root(args.config_dir)
+    for descriptor in sorted((root / "widgets").glob("*.yaml")):
+        try:
+            data = parse_descriptor(descriptor)
+            check_id(data["id"])
+            print(f"{data['id']}\t{data.get('name', '')}")
+        except (KeyError, ValueError, OSError):
+            print(f"invalid\t{descriptor.name}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

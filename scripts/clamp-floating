@@ -1,0 +1,123 @@
+#!/bin/sh
+set -eu
+
+mode=""
+target_id=""
+case "${1:-}" in
+    after-resize)
+        mode=after-resize
+        target_id="${2:-}"
+        ;;
+    "")
+        ;;
+    *)
+        target_id="$1"
+        ;;
+esac
+
+runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+tree="$(swaymsg -r -t get_tree)"
+workspaces="$(swaymsg -r -t get_workspaces)"
+values="$(jq -nr \
+    --argjson tree "$tree" \
+    --argjson workspaces "$workspaces" \
+    --arg target_id "$target_id" '
+    ([$tree | .. | objects |
+        select(.type? == "con" or .type? == "floating_con") |
+        select(if $target_id != "" then
+            ((.id // 0) | tostring) == $target_id
+        else
+            .focused? == true
+        end)][-1]) as $node |
+    ([$workspaces[] | select(.focused == true)][0]) as $ws |
+    if $node == null or $ws == null then empty else
+      [$node.id, $node.floating, $node.fullscreen_mode,
+       $node.rect.x, $node.rect.y, $node.rect.width, $node.rect.height,
+       ($node.deco_rect.height // 0),
+       $ws.rect.x, $ws.rect.y, $ws.rect.width, $ws.rect.height] | @tsv
+    end
+')"
+[ -n "$values" ] || exit 0
+
+old_ifs="$IFS"
+IFS="$(printf '\t')"
+set -- $values
+IFS="$old_ifs"
+
+id="$1"
+floating="$2"
+fullscreen="$3"
+x="$4"
+y="$5"
+width="$6"
+height="$7"
+deco_height="$8"
+workspace_x="$9"
+shift 9
+workspace_y="$1"
+workspace_width="$2"
+workspace_height="$3"
+
+case "$floating" in
+    auto_on|user_on) ;;
+    *) exit 0 ;;
+esac
+[ "$fullscreen" -eq 0 ] || exit 0
+
+# Match ctlst-gestured usable_workspace_rect: keep titlebars off shell chrome.
+shell_top=44
+margin=8
+if [ "$workspace_width" -gt "$workspace_height" ]; then
+    shell_bottom=50
+    keyboard_h=190
+else
+    shell_bottom=54
+    keyboard_h=340
+fi
+if [ ! -e "$runtime/ctlstkeyboard.visible" ]; then
+    keyboard_h=0
+fi
+
+usable_x=$((workspace_x + margin))
+usable_y=$((workspace_y + shell_top + margin))
+usable_width=$((workspace_width - margin * 2))
+usable_height=$((workspace_height - shell_top - shell_bottom - keyboard_h - margin * 2))
+[ "$usable_width" -gt 0 ] && [ "$usable_height" -gt 0 ] || exit 0
+
+max_width=$((usable_width - 4))
+max_height=$((usable_height - deco_height - 4))
+# Phone portrait dialogs need a narrower cap than desktop defaults.
+portal_cap=$((usable_width * 85 / 100))
+[ "$portal_cap" -lt 320 ] && portal_cap=320
+[ "$max_width" -le "$portal_cap" ] || max_width="$portal_cap"
+[ "$max_width" -gt 0 ] && [ "$max_height" -gt 0 ] || exit 0
+
+new_width="$width"
+new_height="$height"
+[ "$new_width" -le "$max_width" ] || new_width="$max_width"
+[ "$new_height" -le "$max_height" ] || new_height="$max_height"
+
+if [ "$new_width" -ne "$width" ] || [ "$new_height" -ne "$height" ]; then
+    swaymsg "[con_id=$id] resize set width $new_width px height $new_height px" >/dev/null
+    sleep 0.08
+    [ "$mode" = after-resize ] || exec "$0" after-resize "$target_id"
+fi
+
+title_top=$((y - deco_height))
+min_x=$((usable_x + 2))
+max_x=$((usable_x + usable_width - new_width - 2))
+min_top=$((usable_y + 2))
+max_top=$((usable_y + usable_height - new_height - deco_height - 2))
+
+new_x="$x"
+new_top="$title_top"
+[ "$new_x" -ge "$min_x" ] || new_x="$min_x"
+[ "$new_x" -le "$max_x" ] || new_x="$max_x"
+[ "$new_top" -ge "$min_top" ] || new_top="$min_top"
+[ "$new_top" -le "$max_top" ] || new_top="$max_top"
+
+if [ "$new_x" -ne "$x" ] || [ "$new_top" -ne "$title_top" ]; then
+    move_x=$((new_x - workspace_x))
+    move_top=$((new_top - workspace_y))
+    swaymsg "[con_id=$id] move position $move_x $move_top" >/dev/null
+fi

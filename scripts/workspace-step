@@ -1,0 +1,30 @@
+#!/bin/sh
+set -eu
+
+runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+gesture_socket="$runtime_dir/ctlst-gestures.sock"
+
+move=false
+if [ "${1:-}" = "--move" ]; then
+    move=true
+    shift
+fi
+
+direction="${1:-}"
+case "$direction" in
+    prev|next) ;;
+    *)
+        echo "usage: workspace-step [--move] prev|next" >&2
+        exit 2
+        ;;
+esac
+
+if [ "$move" = true ]; then
+    [ "$direction" = next ] && command=N || command=P
+else
+    [ "$direction" = next ] && command=n || command=p
+fi
+
+[ -S "$gesture_socket" ] || exit 1
+printf '%s' "$command" |
+    socat - "UNIX-SENDTO:$gesture_socket"

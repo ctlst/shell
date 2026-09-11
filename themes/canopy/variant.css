@@ -1,0 +1,21 @@
+/* Organic dark surfaces: soft separation, apricot interaction color. */
+window#ctlstdrawer .drawer-root,
+window#ctlstshade .shade-root {
+  background: @ctlst_bg;
+}
+.ctlst-surface,
+.shade-card,
+.shade-settings-box,
+.home-widget,
+.home-widget-picker,
+.bubble,
+.compose-shell,
+.number-shell,
+.bottom-nav,
+.action-sheet {
+  background-image: linear-gradient(150deg,
+    alpha(@ctlst_panel_alt, 0.74), alpha(@ctlst_panel, 0.92));
+  box-shadow: 0 8px 24px alpha(#000000, 0.18);
+}
+.home-weather-card,
+.home-glance-card { background: alpha(@ctlst_panel, 0.88); }

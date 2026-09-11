@@ -1,0 +1,805 @@
+#!/usr/bin/env python3
+"""Dynamic app-workspace authority for the Sway Touch session."""
+
+import json
+import os
+import signal
+import socket
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+
+HOME_WORKSPACE = "1"
+APP_WORKSPACE_PREFIX = "app:"
+CAMERA_APP_ID = "dev.ctlst.Camera"
+LAUNCH_TIMEOUT_SECONDS = float(os.environ.get("CTLST_LAUNCH_TIMEOUT_SECONDS", "30"))
+RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+SOCKET_PATH = RUNTIME / "ctlst-workspaces.sock"
+PID_PATH = RUNTIME / "ctlst-workspaced.pid"
+LAUNCH_PENDING = RUNTIME / "ctlst-app-launch-pending"
+HOME_SOCKET = RUNTIME / "ctlst-home.sock"
+OVERVIEW_SOCKET = RUNTIME / "ctlst-overview.sock"
+SESSION_MENU_PID = RUNTIME / "sway-touch-session-menu.pid"
+GESTURE_SOCKET = RUNTIME / "ctlst-gestures.sock"
+SCRIPTS = Path(
+    os.environ.get(
+        "CTLST_LIBEXEC_DIR",
+        Path(__file__).resolve().parent,
+    )
+)
+CURRENT_SWAYSOCK = os.environ.get("SWAYSOCK", "")
+
+
+def run(command, capture=False):
+    return subprocess.run(
+        command,
+        text=True,
+        stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+
+
+def sway_json(message_type):
+    result = run(["swaymsg", "-r", "-t", message_type], capture=True)
+    try:
+        return json.loads(result.stdout)
+    except (TypeError, json.JSONDecodeError):
+        return [] if message_type == "get_workspaces" else {}
+
+
+def workspace_sort_key(name):
+    name = str(name)
+    try:
+        return (0, int(name))
+    except ValueError:
+        pass
+    if name.startswith(APP_WORKSPACE_PREFIX):
+        try:
+            return (1, int(name[len(APP_WORKSPACE_PREFIX):]))
+        except ValueError:
+            pass
+    return (2, name)
+
+
+def normalize_app_id(value):
+    value = str(value or "").lower()
+    if value.endswith(".desktop"):
+        value = value[:-8]
+    return "".join(character for character in value if character.isalnum())
+
+
+def desktop_matches(desktop_id, app_id):
+    requested = normalize_app_id(desktop_id)
+    running = normalize_app_id(app_id)
+    return bool(requested and running) and (
+        requested == running
+        or requested.endswith(running)
+        or running.endswith(requested)
+    )
+
+
+def workspace_nodes(tree):
+    found = []
+    pending = [tree] if isinstance(tree, dict) else []
+    while pending:
+        node = pending.pop()
+        if node.get("type") == "workspace":
+            found.append(node)
+            continue
+        pending.extend(node.get("nodes", []))
+        pending.extend(node.get("floating_nodes", []))
+    return found
+
+
+def leaf_windows(node):
+    leaves = []
+    pending = list(node.get("nodes", [])) + list(node.get("floating_nodes", []))
+    while pending:
+        child = pending.pop()
+        children = list(child.get("nodes", [])) + list(
+            child.get("floating_nodes", [])
+        )
+        if children:
+            pending.extend(children)
+            continue
+        app_id = child.get("app_id") or child.get(
+            "window_properties", {}
+        ).get("class")
+        if not (app_id or child.get("window") or child.get("pid")):
+            continue
+        leaves.append(
+            {
+                "con_id": child.get("id"),
+                "app_id": app_id or "",
+                "title": child.get("name") or "",
+                "focused": bool(child.get("focused")),
+                "fullscreen": int(child.get("fullscreen_mode") or 0),
+                "floating": child.get("type") == "floating_con",
+            }
+        )
+    return leaves
+
+
+def layout_name(workspace, windows):
+    if len(windows) < 2:
+        return "single"
+    layout = workspace.get("layout") or ""
+    if layout in {"splith", "splitv"}:
+        return layout
+    return "stacked"
+
+
+def task_snapshot(tree):
+    tasks = []
+    focused = HOME_WORKSPACE
+    for workspace in workspace_nodes(tree):
+        name = str(workspace.get("name") or workspace.get("num") or "")
+        if not name or name == HOME_WORKSPACE or name.startswith("__"):
+            continue
+        windows = leaf_windows(workspace)
+        if not windows:
+            continue
+        if workspace.get("focused"):
+            focused = name
+        icons = []
+        for window in windows:
+            app_id = window["app_id"]
+            if app_id and app_id not in icons:
+                icons.append(app_id)
+        tasks.append(
+            {
+                "id": f"workspace:{name}",
+                "workspace": name,
+                "focused": bool(workspace.get("focused")),
+                "urgent": bool(workspace.get("urgent")),
+                "layout": layout_name(workspace, windows),
+                "icons": icons,
+                "window_count": len(windows),
+                "windows": windows,
+            }
+        )
+    tasks.sort(key=lambda task: workspace_sort_key(task["workspace"]))
+    return {"version": 1, "home": HOME_WORKSPACE, "focused": focused, "tasks": tasks}
+
+
+def home_windows(tree):
+    for workspace in workspace_nodes(tree):
+        name = str(workspace.get("name") or workspace.get("num") or "")
+        if name == HOME_WORKSPACE:
+            return leaf_windows(workspace)
+    return []
+
+
+def set_snapshot_focus(snapshot, workspace):
+    workspace = str(workspace or HOME_WORKSPACE)
+    allowed = set(ordered_workspaces(snapshot))
+    if workspace not in allowed:
+        current = str(snapshot.get("focused") or HOME_WORKSPACE)
+        workspace = current if current in allowed else HOME_WORKSPACE
+    snapshot["focused"] = workspace
+    for task in snapshot["tasks"]:
+        task["focused"] = task["workspace"] == workspace
+    return snapshot
+
+
+def camera_workspace(snapshot):
+    for task in snapshot.get("tasks", []):
+        for window in task.get("windows", []):
+            if window.get("app_id") == CAMERA_APP_ID:
+                return str(task.get("workspace") or "")
+    return ""
+
+
+def send_workspace_cache(snapshot):
+    ordered = ordered_workspaces(snapshot)
+    payload = "l " + " ".join(
+        [snapshot.get("focused") or HOME_WORKSPACE, HOME_WORKSPACE]
+        + ordered[1:]
+    )
+    if len(payload) >= 256 or not GESTURE_SOCKET.exists():
+        return
+    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as client:
+        try:
+            client.sendto(payload.encode("ascii"), str(GESTURE_SOCKET))
+        except (OSError, UnicodeEncodeError):
+            pass
+
+
+def allocate_workspace(snapshot, pending_workspaces=()):
+    occupied = {
+        str(task["workspace"]) for task in snapshot["tasks"]
+    } | {str(value) for value in pending_workspaces}
+    sequence = 1
+    while f"{APP_WORKSPACE_PREFIX}{sequence}" in occupied:
+        sequence += 1
+    return f"{APP_WORKSPACE_PREFIX}{sequence}"
+
+
+def ordered_workspaces(snapshot):
+    return [HOME_WORKSPACE] + [task["workspace"] for task in snapshot["tasks"]]
+
+
+def step_target(snapshot, current, direction):
+    ordered = ordered_workspaces(snapshot)
+    if not ordered:
+        return HOME_WORKSPACE
+    try:
+        index = ordered.index(str(current))
+    except ValueError:
+        index = 0
+    return ordered[(index + (1 if direction > 0 else -1)) % len(ordered)]
+
+
+def send_home(command):
+    if not HOME_SOCKET.exists():
+        return
+    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as client:
+        try:
+            client.sendto(command.encode("ascii"), str(HOME_SOCKET))
+        except OSError:
+            pass
+
+
+def send_overlay_socket(socket_path, message):
+    if not socket_path.exists():
+        return
+    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as client:
+        try:
+            client.sendto(message.encode("ascii"), str(socket_path))
+        except OSError:
+            pass
+
+
+def close_session_menu():
+    if not SESSION_MENU_PID.exists():
+        return
+    try:
+        pid = int(SESSION_MENU_PID.read_text(encoding="ascii").strip())
+        os.kill(pid, signal.SIGTERM)
+    except (OSError, ValueError):
+        pass
+    SESSION_MENU_PID.unlink(missing_ok=True)
+
+
+def dismiss_shell_overlays():
+    send_home("E")
+    send_overlay_socket(RUNTIME / "ctlst-dock.sock", "H")
+    if (RUNTIME / "ctlstkeyboard.visible").exists() and (SCRIPTS / "keyboard-control").is_file():
+        run([str(SCRIPTS / "keyboard-control"), "hide"])
+    close_session_menu()
+    run([str(SCRIPTS / "ctlstdrawer"), "close"])
+    run([str(SCRIPTS / "ctlstshade"), "hide"])
+    # An optional running provider can be dismissed without its launcher installed.
+    send_overlay_socket(RUNTIME / "ctlstpad.sock", "H")
+    send_overlay_socket(OVERVIEW_SOCKET, "H")
+
+
+def close_camera():
+    run(["pkill", "-TERM", "-x", "ctlst-camera"])
+
+
+def process_alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def process_value(pid, name):
+    try:
+        values = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+    except OSError:
+        return ""
+    prefix = f"{name}=".encode("ascii")
+    for value in values:
+        if value.startswith(prefix):
+            return value[len(prefix):].decode("utf-8", errors="replace")
+    return ""
+
+
+def is_workspace_daemon(pid):
+    try:
+        command = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ")
+    except OSError:
+        return False
+    return b"ctlst-workspaced" in command and b" daemon" in command
+
+
+def claim_daemon():
+    try:
+        existing = int(PID_PATH.read_text(encoding="ascii").strip())
+    except (OSError, ValueError):
+        existing = 0
+    if existing > 1 and process_alive(existing) and is_workspace_daemon(existing):
+        existing_socket = process_value(existing, "SWAYSOCK")
+        if (
+            CURRENT_SWAYSOCK
+            and existing_socket == CURRENT_SWAYSOCK
+            and Path(CURRENT_SWAYSOCK).exists()
+        ):
+            return False
+        try:
+            os.kill(existing, signal.SIGTERM)
+        except OSError:
+            pass
+        for _attempt in range(20):
+            if not process_alive(existing):
+                break
+            time.sleep(0.05)
+    PID_PATH.unlink(missing_ok=True)
+    PID_PATH.write_text(f"{os.getpid()}\n", encoding="ascii")
+    return True
+
+
+def release_daemon():
+    try:
+        owner = int(PID_PATH.read_text(encoding="ascii").strip())
+    except (OSError, ValueError):
+        return
+    if owner == os.getpid():
+        PID_PATH.unlink(missing_ok=True)
+
+
+def write_launch_pending(workspace, containers):
+    payload = {
+        "workspace": str(workspace),
+        "created": time.monotonic(),
+        "containers": containers,
+    }
+    temporary = LAUNCH_PENDING.with_name(
+        f"{LAUNCH_PENDING.name}.{os.getpid()}.tmp"
+    )
+    temporary.write_text(json.dumps(payload), encoding="ascii")
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, LAUNCH_PENDING)
+
+
+class WorkspaceDaemon:
+    def __init__(self):
+        self.lock = threading.RLock()
+        self.command_lock = threading.RLock()
+        self.focus_timer = None
+        self.focus_generation = 0
+        self.pending = []
+        self.running = True
+        self.server = None
+        snapshot = task_snapshot(sway_json("get_tree"))
+        self.cached_snapshot = set_snapshot_focus(
+            snapshot, self.focused_workspace()
+        )
+        send_workspace_cache(self.cached_snapshot)
+
+    def snapshot(self, refresh=False):
+        if refresh:
+            updated = task_snapshot(sway_json("get_tree"))
+            with self.lock:
+                previous = self.cached_snapshot.get("focused", HOME_WORKSPACE)
+                set_snapshot_focus(updated, previous)
+                self.cached_snapshot = updated
+                send_workspace_cache(self.cached_snapshot)
+        with self.lock:
+            return self.cached_snapshot
+
+    def set_cached_focus(self, workspace):
+        with self.lock:
+            set_snapshot_focus(self.cached_snapshot, workspace)
+            send_workspace_cache(self.cached_snapshot)
+
+    def schedule_cached_focus(self, workspace):
+        with self.lock:
+            self.focus_generation += 1
+            generation = self.focus_generation
+            if self.focus_timer is not None:
+                self.focus_timer.cancel()
+            self.focus_timer = threading.Timer(
+                0.035,
+                self.commit_scheduled_focus,
+                args=(workspace, generation),
+            )
+            self.focus_timer.daemon = True
+            self.focus_timer.start()
+
+    def commit_scheduled_focus(self, workspace, generation):
+        with self.lock:
+            if generation != self.focus_generation:
+                return
+            self.focus_timer = None
+            set_snapshot_focus(self.cached_snapshot, workspace)
+            send_workspace_cache(self.cached_snapshot)
+
+    def cancel_scheduled_focus(self):
+        with self.lock:
+            self.focus_generation += 1
+            if self.focus_timer is not None:
+                self.focus_timer.cancel()
+                self.focus_timer = None
+
+    def focused_workspace(self):
+        for workspace in sway_json("get_workspaces"):
+            if workspace.get("focused"):
+                return str(workspace.get("name") or workspace.get("num"))
+        return HOME_WORKSPACE
+
+    def close_camera_if_unfocused(self, workspace):
+        active_workspace = camera_workspace(self.snapshot(refresh=True))
+        if active_workspace and active_workspace != str(workspace):
+            close_camera()
+
+    def focus(self, workspace):
+        self.close_camera_if_unfocused(workspace)
+        result = run(["swaymsg", f"workspace {workspace}"])
+        if result.returncode == 0:
+            self.cancel_scheduled_focus()
+            self.set_cached_focus(workspace)
+            send_home("S" if str(workspace) == HOME_WORKSPACE else "H")
+        return result.returncode == 0
+
+    def prepare_launch(self, desktop_id, reuse=True):
+        with self.lock:
+            snapshot = self.snapshot(refresh=True)
+            if reuse:
+                for task in snapshot["tasks"]:
+                    if any(
+                        desktop_matches(desktop_id, window["app_id"])
+                        for window in task["windows"]
+                    ):
+                        self.focus(task["workspace"])
+                        return {
+                            "ok": True,
+                            "workspace": task["workspace"],
+                            "reused": True,
+                        }
+            target = allocate_workspace(
+                snapshot, (pending["workspace"] for pending in self.pending)
+            )
+            previous = self.focused_workspace()
+            existing = [
+                window["con_id"]
+                for task in snapshot["tasks"]
+                for window in task["windows"]
+                if window["con_id"] is not None
+            ]
+            self.pending.append(
+                {
+                    "desktop_id": desktop_id,
+                    "workspace": target,
+                    "previous": previous,
+                    "containers": existing,
+                    "deadline": time.monotonic() + LAUNCH_TIMEOUT_SECONDS,
+                }
+            )
+            write_launch_pending(target, existing)
+            if not self.focus(target):
+                self.pending.pop()
+                LAUNCH_PENDING.unlink(missing_ok=True)
+                return {"ok": False, "error": "cannot focus launch workspace"}
+            return {"ok": True, "workspace": target, "reused": False}
+
+    def consume_pending_window(self, container):
+        con_id = container.get("id")
+        if not con_id:
+            return False
+        app_id = container.get("app_id") or container.get(
+            "window_properties", {}
+        ).get("class") or ""
+        with self.lock:
+            matching = next(
+                (
+                    (index, pending)
+                    for index, pending in enumerate(self.pending)
+                    if int(con_id) not in pending.get("containers", ())
+                    and desktop_matches(pending["desktop_id"], app_id)
+                ),
+                None,
+            )
+            if matching is None:
+                return False
+            index, pending = matching
+            self.pending.pop(index)
+        target = pending["workspace"]
+        run(
+            [
+                "swaymsg",
+                f"[con_id={int(con_id)}] move container to workspace {target}",
+            ]
+        )
+        run(["swaymsg", f"[con_id={int(con_id)}] focus"])
+        self.snapshot(refresh=True)
+        self.set_cached_focus(target)
+        LAUNCH_PENDING.unlink(missing_ok=True)
+        return True
+
+    def repair_home_windows(self):
+        tree = sway_json("get_tree")
+        windows = home_windows(tree)
+        if not windows:
+            return []
+        snapshot = task_snapshot(tree)
+        moved = []
+        reserved = [pending["workspace"] for pending in self.pending]
+        for window in windows:
+            con_id = window.get("con_id")
+            if not con_id:
+                continue
+            with self.lock:
+                matching = next(
+                    (
+                        (index, pending)
+                        for index, pending in enumerate(self.pending)
+                        if int(con_id) not in pending.get("containers", ())
+                        and desktop_matches(
+                            pending["desktop_id"], window.get("app_id")
+                        )
+                    ),
+                    None,
+                )
+                if matching is not None:
+                    index, pending = matching
+                    self.pending.pop(index)
+                    target = pending["workspace"]
+                else:
+                    target = allocate_workspace(snapshot, reserved)
+                reserved.append(target)
+            result = run(
+                [
+                    "swaymsg",
+                    f"[con_id={int(con_id)}] move container to workspace {target}",
+                ]
+            )
+            if result.returncode == 0:
+                moved.append(target)
+                snapshot["tasks"].append({"workspace": target})
+        if moved:
+            LAUNCH_PENDING.unlink(missing_ok=True)
+            self.snapshot(refresh=True)
+            self.focus(moved[-1])
+        return moved
+
+    def expire_pending(self):
+        if self.pending:
+            self.repair_home_windows()
+        now = time.monotonic()
+        expired = []
+        with self.lock:
+            active = []
+            for pending in self.pending:
+                if pending["deadline"] <= now:
+                    expired.append(pending)
+                else:
+                    active.append(pending)
+            self.pending = active
+        if not expired:
+            return
+        LAUNCH_PENDING.unlink(missing_ok=True)
+        current = self.focused_workspace()
+        for pending in expired:
+            if current == pending["workspace"]:
+                self.focus(pending["previous"])
+                current = pending["previous"]
+
+    def _dispatch(self, request):
+        command = request.get("command")
+        if command == "list":
+            return {"ok": True, **self.snapshot()}
+        if command in {"prepare-launch", "prepare-launch-new"}:
+            desktop_id = str(request.get("desktop_id") or "")
+            if not desktop_id:
+                return {"ok": False, "error": "desktop_id is required"}
+            return self.prepare_launch(
+                desktop_id, reuse=command == "prepare-launch"
+            )
+        if command == "home":
+            dismiss_shell_overlays()
+            return {"ok": self.focus(HOME_WORKSPACE)}
+        if command == "focus":
+            workspace = str(request.get("workspace") or "")
+            allowed = set(ordered_workspaces(self.snapshot(refresh=True)))
+            if workspace not in allowed:
+                return {"ok": False, "error": "unknown workspace"}
+            return {"ok": self.focus(workspace)}
+        if command == "step":
+            direction = int(request.get("direction") or 0)
+            if direction == 0:
+                return {"ok": False, "error": "direction must be non-zero"}
+            snapshot = self.snapshot(refresh=True)
+            target = step_target(snapshot, self.focused_workspace(), direction)
+            return {"ok": self.focus(target), "workspace": target}
+        if command == "move":
+            try:
+                con_id = int(request.get("con_id"))
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "valid con_id is required"}
+            workspace = str(request.get("workspace") or "")
+            snapshot = self.snapshot(refresh=True)
+            if workspace == "new":
+                workspace = allocate_workspace(
+                    snapshot,
+                    (pending["workspace"] for pending in self.pending),
+                )
+            elif workspace not in set(ordered_workspaces(snapshot)):
+                return {"ok": False, "error": "unknown workspace"}
+            if workspace == HOME_WORKSPACE:
+                return {"ok": False, "error": "app windows cannot move Home"}
+            result = run(
+                [
+                    "swaymsg",
+                    f"[con_id={con_id}] move container to workspace {workspace}",
+                ]
+            )
+            if result.returncode != 0:
+                return {"ok": False, "error": "move failed"}
+            if request.get("focus", True):
+                self.focus(workspace)
+                run(["swaymsg", f"[con_id={con_id}] focus"])
+            return {"ok": True, "workspace": workspace}
+        if command == "close":
+            workspace = str(request.get("workspace") or "")
+            task = next(
+                (
+                    task
+                    for task in self.snapshot(refresh=True)["tasks"]
+                    if task["workspace"] == workspace
+                ),
+                None,
+            )
+            if task is None:
+                return {"ok": False, "error": "unknown workspace"}
+            for window in task["windows"]:
+                run(["swaymsg", f"[con_id={int(window['con_id'])}] kill"])
+            if self.focused_workspace() == workspace:
+                self.focus(HOME_WORKSPACE)
+            return {"ok": True}
+        return {"ok": False, "error": "unknown command"}
+
+    def dispatch(self, request):
+        if request.get("command") == "list":
+            return {"ok": True, **self.snapshot()}
+        with self.command_lock:
+            return self._dispatch(request)
+
+    def handle_client(self, connection):
+        try:
+            payload = connection.recv(65536)
+            request = json.loads(payload.decode("utf-8"))
+            response = self.dispatch(request)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+            response = {"ok": False, "error": str(error)}
+        try:
+            connection.sendall(json.dumps(response).encode("utf-8") + b"\n")
+        except OSError:
+            pass
+        finally:
+            connection.close()
+
+    def serve(self):
+        SOCKET_PATH.unlink(missing_ok=True)
+        self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.server.bind(str(SOCKET_PATH))
+        os.chmod(SOCKET_PATH, 0o600)
+        self.server.listen(8)
+        self.server.settimeout(0.25)
+        while self.running:
+            self.expire_pending()
+            try:
+                connection, _address = self.server.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            threading.Thread(
+                target=self.handle_client, args=(connection,), daemon=True
+            ).start()
+
+    def watch_sway(self):
+        while self.running:
+            process = subprocess.Popen(
+                ["swaymsg", "-m", "-t", "subscribe", '["workspace","window"]'],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+            try:
+                for line in process.stdout:
+                    if not self.running:
+                        break
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    change = event.get("change")
+                    if change == "focus" and event.get("current"):
+                        current = event["current"]
+                        if current.get("type") == "workspace":
+                            workspace = str(
+                                current.get("name") or current.get("num") or ""
+                            )
+                            self.schedule_cached_focus(workspace)
+                            self.close_camera_if_unfocused(workspace)
+                            send_home(
+                                "S" if workspace == HOME_WORKSPACE else "H"
+                            )
+                        # Focus-only events do not change task membership.
+                        continue
+                    elif change == "new":
+                        self.consume_pending_window(event.get("container") or {})
+                    if change in {"new", "move"}:
+                        with self.command_lock:
+                            self.repair_home_windows()
+                    self.snapshot(refresh=True)
+            finally:
+                process.terminate()
+                try:
+                    process.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+            if self.running:
+                time.sleep(0.25)
+
+    def stop(self, _signum=None, _frame=None):
+        self.running = False
+        self.cancel_scheduled_focus()
+        if self.server is not None:
+            self.server.close()
+
+
+def request(command):
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.connect(str(SOCKET_PATH))
+        client.sendall(json.dumps(command).encode("utf-8"))
+        payload = b""
+        while b"\n" not in payload:
+            chunk = client.recv(65536)
+            if not chunk:
+                break
+            payload += chunk
+    return json.loads(payload.decode("utf-8"))
+
+
+def run_daemon():
+    if not claim_daemon():
+        return
+    daemon = WorkspaceDaemon()
+    signal.signal(signal.SIGINT, daemon.stop)
+    signal.signal(signal.SIGTERM, daemon.stop)
+    watcher = threading.Thread(target=daemon.watch_sway, daemon=True)
+    watcher.start()
+    try:
+        daemon.serve()
+    finally:
+        daemon.stop()
+        SOCKET_PATH.unlink(missing_ok=True)
+        release_daemon()
+        LAUNCH_PENDING.unlink(missing_ok=True)
+
+
+def main():
+    command = sys.argv[1] if len(sys.argv) > 1 else "list"
+    if command == "daemon":
+        run_daemon()
+        return
+    payload = {"command": command}
+    if command in {"prepare-launch", "prepare-launch-new"}:
+        payload["desktop_id"] = sys.argv[2] if len(sys.argv) > 2 else ""
+    elif command == "focus":
+        payload["workspace"] = sys.argv[2] if len(sys.argv) > 2 else ""
+    elif command == "step":
+        payload["direction"] = int(sys.argv[2]) if len(sys.argv) > 2 else 0
+    elif command == "close":
+        payload["workspace"] = sys.argv[2] if len(sys.argv) > 2 else ""
+    elif command == "move":
+        payload["con_id"] = sys.argv[2] if len(sys.argv) > 2 else ""
+        payload["workspace"] = sys.argv[3] if len(sys.argv) > 3 else ""
+    response = request(payload)
+    print(json.dumps(response, separators=(",", ":")))
+    if command == "prepare-launch" and response.get("reused"):
+        raise SystemExit(10)
+    raise SystemExit(0 if response.get("ok") else 1)
+
+
+if __name__ == "__main__":
+    main()

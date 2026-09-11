@@ -1,0 +1,88 @@
+#!/bin/sh
+set -eu
+
+mode="${1:-status}"
+case "$mode" in
+	lock|unlock|status) ;;
+	*)
+		printf 'usage: ctlstlock {lock|unlock|status}\n' >&2
+		exit 2
+		;;
+esac
+
+runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+socket_path="$runtime_dir/ctlst-lock.sock"
+visible_path="$runtime_dir/ctlstlock.visible"
+scripts="${CTLST_LIBEXEC_DIR:-/usr/libexec/ctlst-shell}"
+lock_bin="${CTLST_LOCK_BIN:-/usr/bin/ctlstlock}"
+[ -x "$lock_bin" ] || lock_bin="$HOME/.local/bin/ctlstlock"
+
+if [ "$mode" = status ]; then
+	[ -e "$visible_path" ] && printf '%s\n' locked || printf '%s\n' unlocked
+	exit 0
+fi
+
+# A layer-shell lock does not change Sway workspace focus, so workspaced cannot
+# observe that the camera became hidden. Never carry an active camera graph
+# through panel blank/wake; reopening it after unlock creates a fresh graph.
+if [ "$mode" = lock ]; then
+	pkill -TERM -x ctlst-camera 2>/dev/null || true
+fi
+
+ensure_daemon() {
+	if pgrep -x ctlstlock >/dev/null 2>&1 && [ -S "$socket_path" ]; then
+		return 0
+	fi
+	# Stale socket after process exit leaves sendto Connection refused.
+	rm -f "$socket_path" "$visible_path"
+	if [ ! -x "$lock_bin" ]; then
+		printf 'ctlstlock: missing %s\n' "$lock_bin" >&2
+		return 1
+	fi
+	if [ -n "${SWAYSOCK:-}" ] && [ -S "${SWAYSOCK}" ]; then
+		swaymsg exec "$lock_bin" >/dev/null
+	else
+		"$lock_bin" >/dev/null 2>&1 &
+	fi
+	attempts=0
+	while { ! pgrep -x ctlstlock >/dev/null 2>&1 || [ ! -S "$socket_path" ]; } &&
+		[ "$attempts" -lt 100 ]; do
+		sleep 0.05
+		attempts=$((attempts + 1))
+	done
+	pgrep -x ctlstlock >/dev/null 2>&1 && [ -S "$socket_path" ]
+}
+
+ensure_daemon || exit 1
+
+if [ "$mode" = unlock ]; then
+	printf H | socat - "UNIX-SENDTO:$socket_path" >/dev/null 2>&1 || true
+	exit 0
+fi
+
+# Remove interactive shell surfaces before the lock becomes the input owner.
+"$scripts/ctlstdrawer" close >/dev/null 2>&1 || true
+"$scripts/ctlstshade" hide >/dev/null 2>&1 || true
+"$scripts/ctlstpad" hide >/dev/null 2>&1 || true
+if [ -s "$runtime_dir/sway-touch-wvkbd.pid" ]; then
+	kill -USR1 "$(cat "$runtime_dir/sway-touch-wvkbd.pid")" 2>/dev/null || true
+fi
+
+if ! printf L | socat - "UNIX-SENDTO:$socket_path" >/dev/null 2>&1; then
+	# Restart once if the socket was dead.
+	rm -f "$socket_path" "$visible_path"
+	pkill -x ctlstlock 2>/dev/null || true
+	ensure_daemon || exit 1
+	printf L | socat - "UNIX-SENDTO:$socket_path" >/dev/null 2>&1 || exit 1
+fi
+
+attempts=0
+while [ ! -e "$visible_path" ] && [ "$attempts" -lt 40 ]; do
+	sleep 0.05
+	attempts=$((attempts + 1))
+done
+[ -e "$visible_path" ] || exit 1
+
+# The layer surface now owns touch; stop global evdev gesture dispatch.
+pkill -x lisgd-swaytouch 2>/dev/null || true
+pkill -x lisgd 2>/dev/null || true

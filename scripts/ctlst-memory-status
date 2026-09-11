@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+"""Report memory pressure and Sway's memory footprint as JSON.
+
+This command is intentionally read-only. It uses only /proc and does not
+restart Sway or otherwise alter the session.  Set CTLST_PROC_ROOT to a procfs
+fixture root when testing.  SWAY_PID may be set to select a particular Sway
+process; otherwise the first matching Sway command line is used.
+
+PSS and private memory come from smaps_rollup when the kernel permits access.
+The report falls back to status-based RSS attribution and labels that fallback
+instead of presenting RSS as uniquely owned memory.
+
+The restart recommendation is conservative and deterministic:
+  * MemAvailable < 512 MiB, or
+  * Sway RSS >= 384 MiB, or
+  * Sway swap >= 256 MiB, or
+  * total swap used >= 1 GiB.
+
+Missing metrics never trigger a recommendation.
+"""
+
+import json
+import os
+import re
+import sys
+from pathlib import Path
+from typing import Dict, Optional
+
+MiB = 1024 * 1024
+THRESHOLDS = {
+    "mem_available_min_bytes": 512 * MiB,
+    "sway_rss_max_bytes": 384 * MiB,
+    "sway_swap_max_bytes": 256 * MiB,
+    "swap_used_max_bytes": 1024 * MiB,
+}
+
+
+def _kilobytes(value: str) -> Optional[int]:
+    match = re.match(r"^\s*(\d+)\s*(kB)?\s*$", value, re.IGNORECASE)
+    return int(match.group(1)) * 1024 if match else None
+
+
+def _read(path: Path) -> Optional[str]:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except (OSError, UnicodeError):
+        return None
+
+
+def _kilobyte_values(path: Path) -> Dict[str, int]:
+    text = _read(path)
+    values: Dict[str, int] = {}
+    if text is not None:
+        for line in text.splitlines():
+            if ":" in line:
+                key, value = line.split(":", 1)
+                parsed = _kilobytes(value)
+                if parsed is not None:
+                    values[key] = parsed
+    return values
+
+
+def _private_bytes(values: Dict[str, int]) -> Optional[int]:
+    keys = ("Private_Clean", "Private_Dirty", "Private_Hugetlb")
+    present = [values[key] for key in keys if key in values]
+    return sum(present) if present else None
+
+
+def _pressure(proc: Path) -> Optional[dict]:
+    text = _read(proc / "pressure" / "memory")
+    if text is None:
+        return None
+    pressure = {}
+    for line in text.splitlines():
+        fields = line.split()
+        if not fields or fields[0] not in ("some", "full"):
+            continue
+        for field in fields[1:]:
+            if "=" not in field:
+                continue
+            key, value = field.split("=", 1)
+            try:
+                pressure[f"{fields[0]}_{key}"] = (
+                    int(value) if key == "total" else float(value)
+                )
+            except ValueError:
+                continue
+    return pressure or None
+
+
+def _sway_pid(proc: Path) -> Optional[int]:
+    requested = os.environ.get("SWAY_PID")
+    if requested:
+        try:
+            return int(requested) if (proc / requested).is_dir() else None
+        except ValueError:
+            return None
+    try:
+        entries = sorted(proc.iterdir(), key=lambda item: item.name)
+    except OSError:
+        return None
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        raw = _read(entry / "cmdline")
+        if raw is None:
+            continue
+        command = raw.replace("\x00", " ").strip().split()
+        if command and Path(command[0]).name in ("sway", "swayfx"):
+            return int(entry.name)
+    return None
+
+
+def report(proc_root: Optional[str] = None) -> dict:
+    proc = Path(proc_root or os.environ.get("CTLST_PROC_ROOT", "/proc"))
+    meminfo = _kilobyte_values(proc / "meminfo")
+    available = meminfo.get("MemAvailable")
+    total = meminfo.get("MemTotal")
+    swap_total = meminfo.get("SwapTotal")
+    swap_free = meminfo.get("SwapFree")
+    swap_used = (
+        swap_total - swap_free
+        if swap_total is not None and swap_free is not None
+        else None
+    )
+    pid = _sway_pid(proc)
+    status = _kilobyte_values(proc / str(pid) / "status") if pid is not None else {}
+    rollup = (
+        _kilobyte_values(proc / str(pid) / "smaps_rollup")
+        if pid is not None
+        else {}
+    )
+    rss = status.get("VmRSS", rollup.get("Rss"))
+    sway_swap = status.get("VmSwap", rollup.get("Swap"))
+    pss = rollup.get("Pss")
+    private = _private_bytes(rollup)
+    source = (
+        "smaps_rollup"
+        if pss is not None or private is not None
+        else "status"
+        if status
+        else "unavailable"
+    )
+    reasons = []
+    if available is not None and available < THRESHOLDS["mem_available_min_bytes"]:
+        reasons.append("low_mem_available")
+    if rss is not None and rss >= THRESHOLDS["sway_rss_max_bytes"]:
+        reasons.append("high_sway_rss")
+    if sway_swap is not None and sway_swap >= THRESHOLDS["sway_swap_max_bytes"]:
+        reasons.append("high_sway_swap")
+    if swap_used is not None and swap_used >= THRESHOLDS["swap_used_max_bytes"]:
+        reasons.append("high_swap_used")
+    return {
+        "mem_total_bytes": total,
+        "mem_available_bytes": available,
+        "mem_used_estimate_bytes": (
+            total - available
+            if total is not None and available is not None
+            else None
+        ),
+        "swap_used_bytes": swap_used,
+        "memory_pressure": _pressure(proc),
+        "sway": {
+            "pid": pid,
+            "rss_bytes": rss,
+            "rss_anon_bytes": status.get("RssAnon"),
+            "rss_file_bytes": status.get("RssFile"),
+            "rss_shmem_bytes": status.get("RssShmem"),
+            "pss_bytes": pss,
+            "private_bytes": private,
+            "swap_bytes": sway_swap,
+            "swap_pss_bytes": rollup.get("SwapPss"),
+            "attribution_source": source,
+        },
+        "restart_recommended": bool(reasons),
+        "restart_reasons": reasons,
+        "thresholds_bytes": THRESHOLDS,
+    }
+
+
+def main() -> int:
+    json.dump(report(), sys.stdout, sort_keys=True, separators=(",", ":"))
+    sys.stdout.write("\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

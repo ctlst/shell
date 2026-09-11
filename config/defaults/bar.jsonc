@@ -1,0 +1,43 @@
+{
+  "name": "status",
+  "layer": "top",
+  "position": "top",
+  "height": 44,
+  "spacing": 4,
+  "modules-left": ["clock"],
+  "modules-center": ["custom/recent"],
+  "modules-right": ["custom/notifications", "network", "battery", "custom/settings"],
+  "clock": {
+    "format": "{:%H:%M}",
+    "tooltip-format": "{:%A %d %B %Y}",
+    "on-click": "/usr/libexec/ctlst-shell/app-run role terminal"
+  },
+  "custom/recent": {
+    "format": "Recent apps",
+    "tooltip": false,
+    "on-click": "/usr/libexec/ctlst-shell/ctlst-control overview"
+  },
+  "wlr/taskbar": {
+    "all-outputs": true,
+    "format": "{icon}", "icon-size": 16,
+    "on-click": "activate", "on-click-middle": "close"
+  },
+  "custom/notifications": {
+    "exec": "/usr/libexec/ctlst-shell/notification-history badge",
+    "return-type": "json", "interval": 60, "signal": 11,
+    "on-click": "/usr/libexec/ctlst-shell/ctlstshade notifications"
+  },
+  "network": {
+    "format-wifi": "Wi-Fi", "format-ethernet": "LAN", "format-disconnected": "Offline",
+    "tooltip-format": "{ifname}: {ipaddr}",
+    "on-click": "/usr/libexec/ctlst-shell/ctlst-control shade"
+  },
+  "battery": {
+    "format": "{capacity}%", "format-charging": "+{capacity}%", "interval": 30
+  },
+  "custom/settings": {
+    "format": "⌄", "tooltip": false,
+    "on-click": "/usr/libexec/ctlst-shell/ctlst-control shade",
+    "on-click-right": "/usr/libexec/ctlst-shell/app-run desktop dev.ctlst.Settings.desktop"
+  }
+}

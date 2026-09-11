@@ -1,0 +1,5 @@
+#!/bin/sh
+
+scripts="${CTLST_LIBEXEC_DIR:-/usr/libexec/ctlst-shell}"
+
+"$scripts/ctlstdrawer" close >/dev/null 2>&1 || true

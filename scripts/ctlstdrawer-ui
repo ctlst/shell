@@ -1,0 +1,1902 @@
+#!/usr/bin/env python3
+
+import cairo
+import gi
+import json
+import math
+import os
+import socket
+import subprocess
+import threading
+import time
+from pathlib import Path
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Gdk", "4.0")
+gi.require_version("Pango", "1.0")
+gi.require_version("Rsvg", "2.0")
+gi.require_version("Graphene", "1.0")
+gi.require_version("Gtk4LayerShell", "1.0")
+from gi.repository import (
+    Gdk,
+    Gio,
+    GLib,
+    GObject,
+    Gtk,
+    Gtk4LayerShell,
+    Pango,
+    Rsvg,
+    Graphene,
+)
+
+
+CSS = b"""
+@define-color ctlst_bg #f7f7f2;
+@define-color ctlst_raised #e8e9e3;
+@define-color ctlst_panel #fffdf7;
+@define-color ctlst_line #c7c9c2;
+@define-color ctlst_line_soft #e4e5df;
+@define-color ctlst_text #1b1c1a;
+@define-color ctlst_muted #454746;
+@define-color ctlst_accent #355f71;
+@define-color ctlst_accent_soft #cce5f0;
+@define-color ctlst_warm #7b5e7b;
+@define-color ctlst_danger #ba1a1a;
+@define-color drawer_bg @ctlst_bg;
+@define-color drawer_panel @ctlst_panel;
+@define-color drawer_tile @ctlst_raised;
+@define-color drawer_tile_hover @ctlst_accent_soft;
+@define-color drawer_text @ctlst_text;
+@define-color drawer_muted @ctlst_muted;
+@define-color drawer_accent @ctlst_accent;
+
+window#ctlstdrawer {
+  background-color: transparent;
+  background-image: none;
+}
+
+.drawer-root {
+  background-color: @drawer_bg;
+  padding: 12px 4px 12px 4px;
+  font-family: "Noto Sans";
+}
+
+.drawer-grabber {
+  min-width: 72px;
+  min-height: 6px;
+  margin-bottom: 18px;
+  border-radius: 3px;
+  background: @ctlst_line;
+}
+
+.drawer-home-footer {
+  min-height: 24px;
+}
+
+.drawer-home-indicator {
+  min-width: 72px;
+  min-height: 6px;
+  border-radius: 3px;
+  background: @drawer_accent;
+}
+
+.drawer-header {
+  margin-left: 12px;
+  margin-right: 12px;
+  margin-bottom: 10px;
+}
+
+.drawer-title {
+  color: @drawer_text;
+  font-family: "Noto Sans";
+  font-size: 28px;
+  font-weight: 600;
+}
+
+.drawer-count {
+  color: @drawer_muted;
+  font-family: "Noto Sans";
+  font-size: 13px;
+}
+
+.drawer-fps {
+  min-width: 132px;
+  padding: 3px 10px;
+  border: 2px solid @drawer_accent;
+  border-radius: 12px;
+  color: @drawer_panel;
+  background: @drawer_accent;
+  font-family: monospace;
+  font-size: 28px;
+  font-weight: 900;
+}
+
+entry.drawer-search {
+  min-height: 46px;
+  padding: 0 16px;
+  border: 1px solid @ctlst_line;
+  border-radius: 22px;
+  color: @drawer_text;
+  background: alpha(@drawer_panel, 0.96);
+  caret-color: @drawer_accent;
+  font-family: "Noto Sans";
+  font-size: 15px;
+}
+
+entry.drawer-search:focus {
+  border-color: @drawer_accent;
+}
+
+button.drawer-close {
+  min-width: 50px;
+  min-height: 44px;
+  margin-left: 10px;
+  border: 0;
+  border-radius: 20px;
+  color: @drawer_text;
+  background: alpha(@drawer_panel, .94);
+  font-family: "Noto Sans";
+  font-size: 14px;
+  font-weight: 500;
+}
+
+gridview {
+  background: transparent;
+}
+
+gridview > child {
+  padding: 0;
+  margin: 2px;
+  border-radius: 14px;
+  background: transparent;
+}
+
+.app-tile {
+  min-width: 54px;
+  min-height: 74px;
+  padding: 4px 2px;
+  border: 0;
+  border-radius: 0;
+  color: @drawer_text;
+  background: alpha(@drawer_panel, 0.78);
+}
+
+.app-icon-disc {
+  min-width: 56px;
+  min-height: 56px;
+  padding: 6px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  box-shadow: none;
+}
+
+gridview > child:hover .app-icon-disc,
+gridview > child:focus .app-icon-disc,
+gridview > child:selected .app-icon-disc {
+  background: alpha(@drawer_accent, 0.13);
+}
+
+gridview > child:hover .app-tile,
+gridview > child:focus .app-tile,
+gridview > child:selected .app-tile {
+  color: @drawer_text;
+  background: transparent;
+  box-shadow: none;
+}
+
+.app-tile label {
+  color: inherit;
+  font-family: "Noto Sans";
+  font-size: 11px;
+}
+
+.drawer-empty { padding: 24px; }
+.drawer-empty label { color: @drawer_muted; font-size: 16px; }
+button.drawer-close:focus-visible, gridview > child:focus-visible {
+  outline: 2px solid @drawer_accent;
+  outline-offset: -2px;
+}
+button.hide-badge, button.drawer-pin {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 6px;
+  border-radius: 22px;
+  color: @ctlst_danger;
+  background: @drawer_panel;
+  border: 0;
+  font-size: 12px;
+  margin: 0;
+}
+button.drawer-pin { color: @drawer_text; }
+
+window#ctlstdrawer .app-tile:not(.drawer-edit-row) {
+  min-width: 88px; min-height: 112px; padding: 6px 4px; margin: 0;
+  border-spacing: 4px; background: transparent;
+}
+window#ctlstdrawer .app-tile:not(.drawer-edit-row) .app-icon-disc {
+  min-width: 44px; min-height: 44px; padding: 6px; margin: 0;
+}
+window#ctlstdrawer .app-tile:not(.drawer-edit-row) label {
+  font-size: 12px;
+}
+window#ctlstdrawer .app-tile:not(.drawer-edit-row) label.favorite-badge {
+  font-size: 10px; min-height: 16px; margin: 0; padding: 1px 5px;
+}
+
+window#ctlstdrawer .app-tile.drawer-edit-row {
+  min-height: 48px; padding: 4px 8px; margin: 0; border-radius: 14px; border-spacing: 0;
+  background: @ctlst_panel;
+}
+window#ctlstdrawer .drawer-edit-row .app-icon-disc {
+  min-width: 32px; min-height: 32px; padding: 0; margin: 0; background: transparent;
+}
+window#ctlstdrawer .drawer-edit-row label { font-size: 13px; }
+window#ctlstdrawer .drawer-edit-row button {
+  min-width: 44px; min-height: 44px; padding: 0 6px;
+  font-weight: 500; background: @ctlst_raised; color: @ctlst_text;
+}
+window#ctlstdrawer .drawer-edit-row button:focus-visible {
+  outline: 2px solid @ctlst_accent; outline-offset: -3px;
+}
+window#ctlstdrawer gridview.drawer-edit-list { border-spacing: 0; }
+window#ctlstdrawer button.drawer-close { min-width: 44px; min-height: 44px; padding: 0 10px; }
+
+.app-tile label.favorite-badge {
+  min-width: 30px;
+  min-height: 16px;
+  margin: 2px 8px 0;
+  padding: 1px 5px;
+  border-radius: 9px;
+  color: @ctlst_panel;
+  background: @ctlst_warm;
+  font-family: "Noto Sans";
+  font-size: 8px;
+  font-weight: 800;
+}
+
+.app-tile label.hide-badge {
+  min-width: 30px;
+  min-height: 16px;
+  margin: 2px 8px 0;
+  padding: 1px 5px;
+  border-radius: 9px;
+  color: @ctlst_panel;
+  background: @ctlst_danger;
+  font-family: "Noto Sans";
+  font-size: 8px;
+  font-weight: 800;
+}
+
+.drawer-drop-ghost {
+  padding: 6px;
+  border-radius: 16px;
+  background: alpha(@drawer_panel, 0.92);
+  box-shadow: 0 8px 24px alpha(@drawer_text, 0.18);
+}
+
+.drawer-drop-ghost picture {
+  min-width: 48px;
+  min-height: 48px;
+}
+
+.drawer-drop-ghost label {
+  color: @drawer_text;
+  font-size: 9px;
+  font-weight: 600;
+}
+
+scrollbar {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+scrollbar slider {
+  min-width: 8px;
+  min-height: 30px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: alpha(@drawer_accent, 0.72);
+}
+"""
+
+ICON_TEXTURE_SIZE = 128
+ICON_DISPLAY_SIZE = 44
+DROP_GHOST_ICON_SIZE = 48
+SVG_CACHE = {}
+PNG_CACHE = {}
+TEXTURE_CACHE = {}
+SCROLL_DRAG_THRESHOLD = 6
+SCROLL_RESPONSE_US = 12000
+SCROLL_DECELERATION_US = 280000
+DRAWER_PULL_START_HEIGHT = 110
+DRAWER_PULL_CLAIM_DISTANCE = 20
+DRAWER_PULL_CLOSE_DISTANCE = 72
+DRAWER_TOP_DISMISS_DISTANCE = 96
+SHEET_SETTLE_US = 180000
+DRAWER_DROP_ARM_MS = 200
+DRAWER_DROP_HIDE_FRACTION = 0.38
+DRAWER_CONTROL_SOCKET = "ctlst-drawer.sock"
+GESTURE_CONTROL_SOCKET = "ctlst-gestures.sock"
+HOME_CONTROL_SOCKET = "ctlst-home.sock"
+HOME_LAYOUT_PATH = Path.home() / ".config" / "ctlst" / "home-layout.json"
+PREFERENCES_PATH = Path.home() / ".config" / "ctlst" / "preferences.json"
+HOME_GRID_COLUMNS = 5
+HOME_GRID_ROWS = 7
+HOME_LAUNCHER_PAGES_MAX = 8
+# Paint through the physical bottom edge. ctlst-gestured owns the bottom Home
+# action while the drawer is visible, so reserving a layer-shell margin only
+# exposes an unwanted strip of Home beneath the sheet.
+DRAWER_BOTTOM_MARGIN = 0
+
+APP_NAME_OVERRIDES = {
+    "dev.ctlst.Dialer.desktop": "Phone",
+    "dev.ctlst.Messages.desktop": "Messages",
+    "waydroid.com.google.android.dialer.desktop": "Phone (Android)",
+    "waydroid.com.google.android.apps.messaging.desktop": "Messages (Android)",
+}
+
+
+def favorite_widget_span():
+    return HOME_GRID_COLUMNS, HOME_GRID_ROWS
+
+
+def favorite_slot_capacity():
+    try:
+        layout = json.loads(HOME_LAYOUT_PATH.read_text(encoding="utf-8"))
+        pages = max(1, int(layout.get("home_pages", 1)))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        pages = 1
+    return HOME_GRID_COLUMNS * HOME_GRID_ROWS * min(pages, HOME_LAUNCHER_PAGES_MAX)
+
+
+class SafeIcon(Gtk.Picture):
+    """Decode icons once into textures without GTK's Glycin loader."""
+
+    FALLBACK_COLOR = (0.18, 0.20, 0.22)
+
+    def __init__(self, display_size=ICON_DISPLAY_SIZE):
+        super().__init__()
+        self.display_size = max(16, int(display_size))
+        self.set_size_request(self.display_size, self.display_size)
+        self.set_hexpand(False)
+        self.set_vexpand(False)
+        self.set_halign(Gtk.Align.CENTER)
+        self.set_valign(Gtk.Align.CENTER)
+        self.set_content_fit(Gtk.ContentFit.CONTAIN)
+        self.set_can_shrink(True)
+
+    def do_measure(self, orientation, for_size):
+        # Pin both min and natural size so a 128px texture cannot blow up
+        # unconstrained overlays (drop ghost).
+        size = self.display_size
+        return size, size, -1, -1
+
+    def set_icon(self, icon, display_name, app_id):
+        fallback = (display_name.strip()[:1] or "?").upper()
+        color = self.FALLBACK_COLOR
+
+        path = self.icon_path(icon)
+        cache_key = (path, fallback, color)
+        texture = TEXTURE_CACHE.get(cache_key)
+        if texture is None:
+            texture = self.make_texture(path, fallback, color)
+            TEXTURE_CACHE[cache_key] = texture
+        self.set_paintable(texture)
+
+    def make_texture(self, path, fallback, color):
+        size = ICON_TEXTURE_SIZE
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, size, size)
+        context = cairo.Context(surface)
+        rendered = False
+
+        if path:
+            try:
+                if path.endswith((".svg", ".svgz")):
+                    if path not in SVG_CACHE:
+                        SVG_CACHE[path] = Rsvg.Handle.new_from_file(path)
+                    viewport = Rsvg.Rectangle()
+                    viewport.x = 0
+                    viewport.y = 0
+                    viewport.width = size
+                    viewport.height = size
+                    SVG_CACHE[path].render_document(context, viewport)
+                    rendered = True
+                elif path.endswith(".png"):
+                    if path not in PNG_CACHE:
+                        PNG_CACHE[path] = cairo.ImageSurface.create_from_png(path)
+                    image = PNG_CACHE[path]
+                    image_width = image.get_width()
+                    image_height = image.get_height()
+                    scale = min(size / image_width, size / image_height)
+                    context.save()
+                    context.translate(
+                        (size - image_width * scale) / 2,
+                        (size - image_height * scale) / 2,
+                    )
+                    context.scale(scale, scale)
+                    context.set_source_surface(image, 0, 0)
+                    context.paint()
+                    context.restore()
+                    rendered = True
+            except (GLib.Error, OSError, cairo.Error):
+                rendered = False
+
+        if not rendered:
+            self.draw_fallback(context, size, fallback, color)
+
+        surface.flush()
+        pixels = GLib.Bytes.new(bytes(surface.get_data()))
+        return Gdk.MemoryTexture.new(
+            size,
+            size,
+            Gdk.MemoryFormat.B8G8R8A8_PREMULTIPLIED,
+            pixels,
+            surface.get_stride(),
+        )
+
+    def icon_path(self, icon):
+        if isinstance(icon, Gio.FileIcon):
+            return icon.get_file().get_path()
+        if icon is None:
+            return None
+
+        theme = Gtk.IconTheme.get_for_display(Gdk.Display.get_default())
+        paintable = theme.lookup_by_gicon(
+            icon,
+            self.display_size,
+            max(1, self.get_scale_factor()),
+            Gtk.TextDirection.NONE,
+            Gtk.IconLookupFlags.FORCE_REGULAR,
+        )
+        file = paintable.get_file()
+        return file.get_path() if file else None
+
+    def draw_fallback(self, context, size, fallback, color):
+        context.set_source_rgb(*color)
+        context.arc(size / 2, size / 2, size * 0.43, 0, 6.284)
+        context.fill()
+        context.select_font_face(
+            "Noto Sans",
+            cairo.FONT_SLANT_NORMAL,
+            cairo.FONT_WEIGHT_BOLD,
+        )
+        context.set_font_size(size * 0.48)
+        extents = context.text_extents(fallback)
+        context.set_source_rgb(0.94, 0.95, 0.96)
+        context.move_to(
+            (size - extents.width) / 2 - extents.x_bearing,
+            (size - extents.height) / 2 - extents.y_bearing,
+        )
+        context.show_text(fallback)
+
+
+class AppTile(Gtk.Box):
+    """Let GridView divide narrow phone outputs into equal columns."""
+
+    def do_measure(self, orientation, for_size):
+        minimum, natural, min_baseline, nat_baseline = super().do_measure(
+            orientation,
+            for_size,
+        )
+        if orientation == Gtk.Orientation.HORIZONTAL:
+            return 1, 1, min_baseline, nat_baseline
+        return minimum, natural, min_baseline, nat_baseline
+
+
+class MotionPanel(Gtk.Widget):
+    """Allocate once and translate the retained drawer child at snapshot time."""
+
+    __gtype_name__ = "CtlstDrawerMotionPanel"
+
+    def __init__(self, child):
+        super().__init__()
+        self.child = child
+        self.translation_y = 0.0
+        self.animation_tick = 0
+        self.animation_start_us = 0
+        self.animation_from = 0.0
+        self.animation_target = 0.0
+        child.set_parent(self)
+
+    def do_measure(self, orientation, for_size):
+        # This widget is anchored to every output edge by layer-shell. Passing
+        # the child's natural size through here lets GTK grow the layer surface
+        # beyond narrow logical outputs (the Pixel is only 480 px wide at
+        # 2.25x scale). Keep the surface shrinkable; do_size_allocate still
+        # gives the retained child the compositor-provided full-screen size.
+        return 1, 1, -1, -1
+
+    def do_size_allocate(self, width, height, baseline):
+        self.child.allocate(width, height, baseline, None)
+
+    def do_snapshot(self, snapshot):
+        offset = Graphene.Point()
+        offset.init(0.0, self.translation_y)
+        snapshot.save()
+        snapshot.translate(offset)
+        self.snapshot_child(self.child, snapshot)
+        snapshot.restore()
+
+    def _set_translation(self, translation_y):
+        translation_y = max(0.0, float(translation_y))
+        if abs(self.translation_y - translation_y) < 0.25:
+            return
+        self.translation_y = translation_y
+        self.queue_draw()
+
+    def cancel_animation(self):
+        if self.animation_tick:
+            self.remove_tick_callback(self.animation_tick)
+            self.animation_tick = 0
+        self.animation_start_us = 0
+
+    def set_translation(self, translation_y):
+        self.cancel_animation()
+        self._set_translation(translation_y)
+
+    def animate_to(self, translation_y):
+        target = max(0.0, float(translation_y))
+        self.cancel_animation()
+        if abs(self.translation_y - target) < 0.25:
+            self._set_translation(target)
+            return
+        self.animation_from = self.translation_y
+        self.animation_target = target
+        self.animation_tick = self.add_tick_callback(self._animation_frame)
+
+    def _animation_frame(self, _widget, frame_clock):
+        frame_time = frame_clock.get_frame_time()
+        if not self.animation_start_us:
+            self.animation_start_us = frame_time
+        elapsed = max(0, frame_time - self.animation_start_us)
+        progress = min(1.0, elapsed / SHEET_SETTLE_US)
+        eased = 1.0 - (1.0 - progress) ** 3
+        value = self.animation_from + (
+            self.animation_target - self.animation_from
+        ) * eased
+        self._set_translation(value)
+        if progress >= 1.0:
+            self.animation_tick = 0
+            self.animation_start_us = 0
+            return GLib.SOURCE_REMOVE
+        return GLib.SOURCE_CONTINUE
+
+
+class TouchScroller:
+    """Frame-timed touch scrolling with short-horizon motion prediction."""
+
+    def __init__(self, scroller, fps_label, top_overscroll):
+        self.scroller = scroller
+        self.adjustment = scroller.get_vadjustment()
+        self.fps_label = fps_label
+        self.start_value = self.adjustment.get_value()
+        self.target = self.start_value
+        self.rendered = self.start_value
+        self.velocity = 0.0
+        self.last_sample_target = self.target
+        self.last_sample_time = 0
+        self.last_frame_time = 0
+        self.fps_window_start = 0
+        self.fps_frames = 0
+        self.fps = None
+        self.tick_id = 0
+        self.dragging = False
+        self.claimed = False
+        self.top_overscroll = top_overscroll
+        self.top_dismiss_active = False
+
+        self.gesture = Gtk.GestureDrag()
+        self.gesture.set_touch_only(True)
+        self.gesture.set_exclusive(True)
+        self.gesture.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        self.gesture.connect("drag-begin", self.on_drag_begin)
+        self.gesture.connect("drag-update", self.on_drag_update)
+        self.gesture.connect("drag-end", self.on_drag_end)
+        scroller.add_controller(self.gesture)
+
+    def on_drag_begin(self, _gesture, _x, _y):
+        now = self.now()
+        self.start_value = self.adjustment.get_value()
+        self.target = self.start_value
+        self.rendered = self.start_value
+        self.velocity = 0.0
+        self.last_sample_target = self.target
+        self.last_sample_time = now
+        self.dragging = True
+        self.claimed = False
+        self.top_dismiss_active = False
+
+    def on_drag_update(self, gesture, _offset_x, offset_y):
+        lower = self.adjustment.get_lower()
+        if self.start_value <= lower + 0.5 and offset_y > 0:
+            if not self.claimed and offset_y >= SCROLL_DRAG_THRESHOLD:
+                gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+                self.claimed = True
+            if self.claimed:
+                self.top_dismiss_active = True
+                self.target = lower
+                self.rendered = lower
+                self.velocity = 0.0
+                self.adjustment.set_value(lower)
+                self.top_overscroll(offset_y, False)
+            return
+
+        new_target = self.clamp(self.start_value - offset_y)
+        now = self.now()
+        elapsed = now - self.last_sample_time
+        if elapsed > 0:
+            sample_velocity = (
+                new_target - self.last_sample_target
+            ) / elapsed
+            self.velocity = self.velocity * 0.35 + sample_velocity * 0.65
+        self.last_sample_target = new_target
+        self.last_sample_time = now
+
+        if not self.claimed and abs(offset_y) >= SCROLL_DRAG_THRESHOLD:
+            gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+            self.claimed = True
+
+        if self.claimed:
+            self.target = new_target
+            self.ensure_tick()
+
+    def on_drag_end(self, _gesture, _offset_x, offset_y):
+        if not self.claimed:
+            self.dragging = False
+            return
+
+        if self.top_dismiss_active:
+            self.dragging = False
+            self.velocity = 0.0
+            self.top_overscroll(offset_y, True)
+            self.top_dismiss_active = False
+            return
+
+        self.target = self.clamp(self.start_value - offset_y)
+        self.dragging = False
+        self.velocity = max(-0.004, min(self.velocity, 0.004))
+        self.ensure_tick()
+
+    def ensure_tick(self):
+        if not self.tick_id:
+            self.last_frame_time = 0
+            self.fps_window_start = 0
+            self.fps_frames = 0
+            self.tick_id = self.scroller.add_tick_callback(self.on_tick)
+
+    def on_tick(self, _widget, frame_clock):
+        frame_time = frame_clock.get_frame_time()
+        if self.fps_window_start:
+            self.fps_frames += 1
+            fps_elapsed = frame_time - self.fps_window_start
+            if fps_elapsed >= 250000:
+                sample = self.fps_frames * 1000000.0 / fps_elapsed
+                self.fps = (
+                    sample
+                    if self.fps is None
+                    else self.fps * 0.55 + sample * 0.45
+                )
+                self.fps_label.set_text(f"{self.fps:02.0f} FPS")
+                self.fps_window_start = frame_time
+                self.fps_frames = 0
+        else:
+            self.fps_window_start = frame_time
+
+        if self.last_frame_time:
+            elapsed = min(frame_time - self.last_frame_time, 50000)
+        else:
+            elapsed = 16667
+        self.last_frame_time = frame_time
+
+        if self.dragging:
+            visible_target = self.target
+        else:
+            self.target = self.clamp(
+                self.target + self.velocity * elapsed
+            )
+            self.velocity *= math.exp(
+                -elapsed / SCROLL_DECELERATION_US
+            )
+            visible_target = self.target
+
+        alpha = 1.0 - math.exp(-elapsed / SCROLL_RESPONSE_US)
+        self.rendered += (visible_target - self.rendered) * alpha
+        self.adjustment.set_value(self.clamp(self.rendered))
+
+        settled = (
+            not self.dragging
+            and abs(self.velocity) < 0.00002
+            and abs(self.target - self.rendered) < 0.25
+        )
+        if settled:
+            self.rendered = self.target
+            self.adjustment.set_value(self.target)
+            self.tick_id = 0
+            return GLib.SOURCE_REMOVE
+        return GLib.SOURCE_CONTINUE
+
+    def clamp(self, value):
+        lower = self.adjustment.get_lower()
+        upper = self.adjustment.get_upper() - self.adjustment.get_page_size()
+        return max(lower, min(value, max(lower, upper)))
+
+    @staticmethod
+    def now():
+        return time.monotonic_ns() // 1000
+
+
+class AppEntry(GObject.Object):
+    favorite = GObject.Property(type=bool, default=False)
+
+    def __init__(self, app):
+        super().__init__()
+        self.app = app
+        self.display_name = APP_NAME_OVERRIDES.get(
+            app.get_id(),
+            app.get_display_name(),
+        )
+        self.search_text = " ".join(
+            filter(
+                None,
+                [
+                    self.display_name,
+                    app.get_display_name(),
+                    app.get_name(),
+                    app.get_description(),
+                    app.get_id(),
+                ],
+            )
+        ).casefold()
+
+
+class CtlstDrawer(Gtk.ApplicationWindow):
+    def __init__(self, application):
+        super().__init__(application=application)
+        Gtk4LayerShell.init_for_window(self)
+        if not Gtk4LayerShell.is_layer_window(self):
+            raise RuntimeError("ctlstdrawer could not initialize layer-shell")
+        Gtk4LayerShell.set_layer(self, Gtk4LayerShell.Layer.OVERLAY)
+        Gtk4LayerShell.set_namespace(self, "ctlstdrawer")
+        for edge in (
+            Gtk4LayerShell.Edge.TOP,
+            Gtk4LayerShell.Edge.BOTTOM,
+            Gtk4LayerShell.Edge.LEFT,
+            Gtk4LayerShell.Edge.RIGHT,
+        ):
+            Gtk4LayerShell.set_anchor(self, edge, True)
+        Gtk4LayerShell.set_margin(
+            self,
+            Gtk4LayerShell.Edge.BOTTOM,
+            DRAWER_BOTTOM_MARGIN,
+        )
+        Gtk4LayerShell.set_exclusive_zone(self, -1)
+        Gtk4LayerShell.set_keyboard_mode(
+            self,
+            Gtk4LayerShell.KeyboardMode.ON_DEMAND,
+        )
+        self.set_name("ctlstdrawer")
+        self.set_title("ctlstdrawer")
+        self.set_decorated(False)
+        self.search_engaged = False
+        self.editing = False
+        self.bound_tiles = set()
+        self.suppress_launch_until = 0.0
+        self.favorite_ids = set()
+        self.favorite_list = []
+        self.hidden_ids = set()
+        self.favorite_capacity = favorite_slot_capacity()
+        self.favorite_refresh_pending = False
+        self.preferences_mtime_ns = None
+        self.app_reload_source = 0
+        self.drop_entry = None
+        self.drop_arm_source = 0
+        self.drop_pending_tile = None
+        self.drop_tile = None
+        self.drop_start_x = 0.0
+        self.drop_start_y = 0.0
+        self.drop_last_offset_x = 0.0
+        self.drop_last_offset_y = 0.0
+        self.drop_overlay = None
+        self.drop_ghost = None
+        self.drop_ghost_image = None
+        self.drop_ghost_label = None
+        self.drop_committed = False
+        self.app_monitor = Gio.AppInfoMonitor.get()
+        self.app_monitor.connect("changed", self.on_apps_changed)
+        self.connect("close-request", self.on_close_request)
+
+        provider = Gtk.CssProvider()
+        provider.load_from_data(CSS)
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(),
+            provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+        )
+        self.theme_provider = Gtk.CssProvider()
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(),
+            self.theme_provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_USER,
+        )
+        self.transparent_provider = Gtk.CssProvider()
+        self.transparent_provider.load_from_data(
+            b"window#ctlstdrawer { background: transparent; background-image: none; }"
+        )
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(),
+            self.transparent_provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_USER + 1,
+        )
+        self.reload_theme()
+
+        keys = Gtk.EventControllerKey()
+        keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        keys.connect("key-pressed", self.on_key_pressed)
+        self.add_controller(keys)
+
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        root.add_css_class("drawer-root")
+        root.set_focusable(True)
+        self.initial_focus = root
+        self.drop_overlay = Gtk.Overlay()
+        self.drop_overlay.set_child(root)
+        self.motion_panel = MotionPanel(self.drop_overlay)
+        self.set_child(self.motion_panel)
+
+        grabber = Gtk.Box()
+        grabber.add_css_class("drawer-grabber")
+        grabber.set_halign(Gtk.Align.CENTER)
+        root.append(grabber)
+
+        self.drawer_pull_active = False
+        self.drawer_pull_claimed = False
+        drawer_pull = Gtk.GestureDrag()
+        drawer_pull.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        drawer_pull.connect("drag-begin", self.on_drawer_pull_begin)
+        drawer_pull.connect("drag-update", self.on_drawer_pull_update)
+        drawer_pull.connect("drag-end", self.on_drawer_pull_end)
+        root.add_controller(drawer_pull)
+
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        header.add_css_class("drawer-header")
+        root.append(header)
+
+        heading = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        title = Gtk.Label(label="Apps", xalign=0)
+        title.add_css_class("drawer-title")
+        self.count = Gtk.Label(xalign=0)
+        self.count.add_css_class("drawer-count")
+        self.count.set_ellipsize(Pango.EllipsizeMode.END)
+        self.count.set_max_width_chars(1)
+        self.count.set_hexpand(True)
+        heading.append(title)
+        heading.append(self.count)
+        heading.set_hexpand(True)
+        header.append(heading)
+
+        self.search = Gtk.SearchEntry()
+        self.search.set_hexpand(True)
+        self.search.set_size_request(0, -1)
+        self.search.set_width_chars(1)
+        self.search.set_placeholder_text("Search apps")
+        self.search.add_css_class("drawer-search")
+        self.search.connect("search-changed", self.on_search_changed)
+        search_touch = Gtk.GestureClick()
+        search_touch.connect("pressed", self.on_search_touched)
+        self.search.add_controller(search_touch)
+        self.search.set_margin_start(12)
+        self.search.set_margin_end(12)
+        self.search.set_margin_bottom(12)
+        root.append(self.search)
+
+        self.fps = Gtk.Label(label="-- FPS")
+        self.fps.add_css_class("drawer-fps")
+        self.fps.set_xalign(0.5)
+        self.fps.set_visible(
+            os.environ.get("CTLST_DRAWER_DEBUG", "").lower()
+            in {"1", "true", "yes"}
+        )
+        header.append(self.fps)
+
+        close = Gtk.Button(label="Edit")
+        close.add_css_class("drawer-close")
+        close.connect("clicked", self.toggle_editing)
+        self.edit_button = close
+        header.append(close)
+        dismiss = Gtk.Button(label="Close")
+        dismiss.add_css_class("drawer-close")
+        dismiss.connect("clicked", lambda _button: self.request_hide())
+        header.append(dismiss)
+
+        self.store = Gio.ListStore(item_type=AppEntry)
+        entries = self.installed_entries()
+        self.app_signature = self.entries_signature(entries)
+        for entry in entries:
+            self.store.append(entry)
+
+        self.app_filter = Gtk.CustomFilter.new(self.filter_app)
+        self.filtered = Gtk.FilterListModel(
+            model=self.store,
+            filter=self.app_filter,
+        )
+        selection = Gtk.NoSelection(model=self.filtered)
+
+        factory = Gtk.SignalListItemFactory()
+        factory.connect("setup", self.setup_tile)
+        factory.connect("bind", self.bind_tile)
+        factory.connect("unbind", self.unbind_tile)
+
+        self.grid = Gtk.GridView(model=selection, factory=factory)
+        self.grid.set_min_columns(2)
+        self.grid.set_max_columns(8)
+        self.grid.set_valign(Gtk.Align.START)
+        self.grid.set_vexpand(False)
+        self.grid.set_single_click_activate(True)
+        self.grid.connect("activate", self.launch_app)
+
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_kinetic_scrolling(True)
+        scroller.set_overlay_scrolling(True)
+        scroller.set_vexpand(True)
+        scroller.set_child(self.grid)
+        self.scroller = scroller
+        root.append(scroller)
+        self.empty_state = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        self.empty_state.add_css_class("drawer-empty")
+        self.empty_state.set_valign(Gtk.Align.CENTER)
+        self.empty_state.set_vexpand(True)
+        self.empty_label = Gtk.Label(label="No matching apps", wrap=True)
+        self.empty_state.append(self.empty_label)
+        self.clear_search = Gtk.Button(label="Clear search")
+        self.clear_search.add_css_class("drawer-close")
+        self.clear_search.set_halign(Gtk.Align.CENTER)
+        self.clear_search.connect("clicked", lambda _button: self.search.set_text(""))
+        self.empty_state.append(self.clear_search)
+        root.append(self.empty_state)
+        self.touch_scroller = TouchScroller(
+            scroller,
+            self.fps,
+            self.on_top_overscroll,
+        )
+
+        home_footer = Gtk.CenterBox()
+        home_footer.add_css_class("drawer-home-footer")
+        home_indicator = Gtk.Box()
+        home_indicator.add_css_class("drawer-home-indicator")
+        home_indicator.set_valign(Gtk.Align.END)
+        home_footer.set_center_widget(home_indicator)
+        root.append(home_footer)
+
+        self.refresh_favorites(force=True)
+        self.refresh_hidden()
+        self.update_count()
+        GLib.idle_add(self.focus_canvas)
+
+    def toggle_editing(self, _button):
+        self.editing = not self.editing
+        self.edit_button.set_label("Done" if self.editing else "Edit")
+        self.favorite_capacity = favorite_slot_capacity()
+        # Apply min/max in an order valid in both directions.
+        self.grid.set_min_columns(1)
+        self.grid.set_max_columns(1 if self.editing else 8)
+        self.grid.set_min_columns(1 if self.editing else 2)
+        if self.editing:
+            self.grid.add_css_class("drawer-edit-list")
+        else:
+            self.grid.remove_css_class("drawer-edit-list")
+        for tile in self.bound_tiles:
+            self.update_tile_layout(tile)
+        self.app_filter.changed(Gtk.FilterChange.DIFFERENT)
+        self.update_count()
+
+    def update_tile_layout(self, tile):
+        entry = getattr(tile, "app_entry", None)
+        tile.set_orientation(Gtk.Orientation.HORIZONTAL if self.editing else Gtk.Orientation.VERTICAL)
+        tile.set_spacing(6 if self.editing else 4)
+        if self.editing:
+            tile.add_css_class("drawer-edit-row")
+        else:
+            tile.remove_css_class("drawer-edit-row")
+        size = 32 if self.editing else ICON_DISPLAY_SIZE
+        tile.app_image.display_size = size
+        tile.app_image.set_size_request(size, size)
+        tile.app_image.queue_resize()
+        tile.app_label.set_hexpand(self.editing)
+        tile.app_label.set_xalign(0 if self.editing else .5)
+        tile.app_label.set_wrap(not self.editing)
+        tile.app_label.set_lines(1 if self.editing else 2)
+        tile.app_label.set_max_width_chars(-1 if self.editing else 9)
+        tile.app_label.set_justify(Gtk.Justification.LEFT if self.editing else Gtk.Justification.CENTER)
+        tile.favorite_badge.set_visible(not self.editing)
+        tile.hide_badge.set_visible(self.editing)
+        tile.pin_button.set_visible(self.editing)
+        hidden = entry is not None and entry.app.get_id() in self.hidden_ids
+        tile.app_image.set_opacity(.5 if hidden else 1)
+        tile.hide_badge.set_label("Show" if hidden else "Hide")
+        if entry is not None:
+            description = f"{'Show' if hidden else 'Hide'} {entry.display_name} {'in' if hidden else 'from'} the drawer"
+            tile.hide_badge.set_tooltip_text(description)
+            tile.hide_badge.update_property([Gtk.AccessibleProperty.DESCRIPTION], [description])
+
+    def reload_theme(self):
+        path = os.path.join(os.environ.get("CTLST_GENERATED_DIR", os.path.expanduser("~/.config/ctlst")), "theme.css")
+        try:
+            self.theme_provider.load_from_path(path)
+        except GLib.Error:
+            pass
+
+    def on_drawer_pull_begin(self, gesture, _x, y):
+        self.drawer_pull_active = y <= DRAWER_PULL_START_HEIGHT
+        self.drawer_pull_claimed = False
+        if not self.drawer_pull_active:
+            gesture.set_state(Gtk.EventSequenceState.DENIED)
+
+    def on_drawer_pull_update(self, gesture, offset_x, offset_y):
+        if not self.drawer_pull_active or self.drawer_pull_claimed:
+            return
+        if offset_y >= DRAWER_PULL_CLAIM_DISTANCE and (
+            abs(offset_x) <= offset_y * 1.25
+        ):
+            gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+            self.drawer_pull_claimed = True
+
+    def on_drawer_pull_end(self, _gesture, offset_x, offset_y):
+        should_close = (
+            self.drawer_pull_claimed
+            and offset_y >= DRAWER_PULL_CLOSE_DISTANCE
+            and abs(offset_x) <= offset_y * 1.25
+        )
+        self.drawer_pull_active = False
+        self.drawer_pull_claimed = False
+        if should_close:
+            self.request_hide()
+
+    def on_top_overscroll(self, distance, finished):
+        distance = max(0, distance)
+        translation_y = min(int(distance), max(0, self.get_height() - 1))
+        if finished:
+            if distance >= DRAWER_TOP_DISMISS_DISTANCE:
+                self.request_hide()
+            else:
+                self.motion_panel.set_translation(0)
+            return
+        self.motion_panel.set_translation(translation_y)
+
+    def setup_tile(self, _factory, list_item):
+        tile = AppTile(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        tile.add_css_class("app-tile")
+        tile.set_halign(Gtk.Align.FILL)
+        tile.set_valign(Gtk.Align.START)
+
+        disc = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        disc.add_css_class("app-icon-disc")
+        disc.set_halign(Gtk.Align.CENTER)
+        disc.set_valign(Gtk.Align.CENTER)
+        disc.set_hexpand(False)
+        disc.set_vexpand(False)
+
+        image = SafeIcon()
+        image.set_halign(Gtk.Align.CENTER)
+        image.set_valign(Gtk.Align.CENTER)
+        image.set_hexpand(True)
+        image.set_vexpand(True)
+        disc.append(image)
+        tile.append(disc)
+
+        label = Gtk.Label()
+        label.set_ellipsize(Pango.EllipsizeMode.END)
+        label.set_width_chars(1)
+        label.set_max_width_chars(9)
+        label.set_lines(2)
+        label.set_wrap(True)
+        label.set_justify(Gtk.Justification.CENTER)
+        tile.append(label)
+
+        badge = Gtk.Label(label="Home")
+        badge.add_css_class("favorite-badge")
+        badge.set_halign(Gtk.Align.CENTER)
+        badge.set_can_target(False)
+        tile.append(badge)
+
+        pin_button = Gtk.Button(label="Add")
+        pin_button.add_css_class("drawer-pin")
+        pin_button.set_halign(Gtk.Align.CENTER)
+        pin_button.set_visible(False)
+        pin_button.connect("clicked", self.on_pin_clicked)
+        tile.append(pin_button)
+
+        hide_badge = Gtk.Button(label="Hide")
+        hide_badge.add_css_class("hide-badge")
+        hide_badge.set_halign(Gtk.Align.CENTER)
+        hide_badge.set_visible(False)
+        hide_badge.connect("clicked", self.on_hide_clicked)
+        tile.append(hide_badge)
+
+        tile.app_disc = disc
+        tile.app_image = image
+        tile.app_label = label
+        tile.favorite_badge = badge
+        tile.pin_button = pin_button
+        tile.hide_badge = hide_badge
+        tile.favorite_handler = 0
+        # Long-press pins to Home (or toggles favorite while editing). Do not
+        # attach a per-tile GestureDrag: claiming press sequences there steals
+        # vertical motion from TouchScroller and freezes the app list.
+        favorite_press = Gtk.GestureLongPress()
+        favorite_press.set_propagation_phase(Gtk.PropagationPhase.BUBBLE)
+        favorite_press.connect("pressed", self.on_favorite_long_press)
+        tile.add_controller(favorite_press)
+        list_item.set_child(tile)
+
+    def bind_tile(self, _factory, list_item):
+        entry = list_item.get_item()
+        tile = list_item.get_child()
+        icon = entry.app.get_icon()
+        app_id = entry.app.get_id() or entry.display_name
+        tile.app_image.set_icon(
+            icon,
+            entry.display_name,
+            app_id,
+        )
+        tile.app_label.set_text(entry.display_name)
+        tile.set_tooltip_text(
+            entry.app.get_description() or entry.display_name
+        )
+        tile.app_entry = entry
+        self.bound_tiles.add(tile)
+        tile.hide_badge.set_tooltip_text("Hide " + entry.display_name + " from the drawer")
+        tile.hide_badge.update_property(
+            [Gtk.AccessibleProperty.DESCRIPTION], ["Hide " + entry.display_name + " from the drawer"])
+        tile.favorite_handler = entry.connect(
+            "notify::favorite",
+            self.on_entry_favorite_changed,
+            tile,
+        )
+        self.update_favorite_badge(entry, tile)
+        self.update_tile_layout(tile)
+
+    def unbind_tile(self, _factory, list_item):
+        tile = list_item.get_child()
+        self.bound_tiles.discard(tile)
+        entry = getattr(tile, "app_entry", None)
+        handler = getattr(tile, "favorite_handler", 0)
+        if entry is not None and handler:
+            entry.disconnect(handler)
+        tile.favorite_handler = 0
+        tile.app_entry = None
+
+    def on_entry_favorite_changed(self, entry, _property, tile):
+        self.update_favorite_badge(entry, tile)
+
+    @staticmethod
+    def update_favorite_badge(entry, tile):
+        # Reserve the same quiet badge line on every tile so edit actions and
+        # names stay aligned; an empty label adds no misleading accessible text.
+        tile.favorite_badge.set_label("Home" if entry.favorite else "")
+        tile.favorite_badge.set_opacity(1.0 if entry.favorite else 0.0)
+        verb = "Remove" if entry.favorite else "Add"
+        description = f"{verb} {entry.display_name} {'from' if entry.favorite else 'to'} Home"
+        tile.pin_button.set_label(verb)
+        tile.pin_button.set_tooltip_text(description)
+        tile.pin_button.update_property([Gtk.AccessibleProperty.DESCRIPTION], [description])
+        if entry.favorite:
+            tile.add_css_class("favorite")
+        else:
+            tile.remove_css_class("favorite")
+
+    def on_favorite_long_press(self, gesture, _x, _y):
+        tile = gesture.get_widget()
+        entry = getattr(tile, "app_entry", None)
+        if entry is None:
+            return
+        gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+        self.suppress_launch_until = time.monotonic() + 0.75
+        if self.editing:
+            self.toggle_favorite(entry)
+            return
+        # Press-hold pins the app to a free Home cell. The old drag-ghost path
+        # left a floating icon and often never committed because drawer coords
+        # do not land on Home's grid and hide cancels the gesture.
+        self.reset_drop_drag()
+        desktop_id = entry.app.get_id()
+        if not desktop_id:
+            self.count.set_text(f"{entry.display_name} cannot be added to Home")
+            return
+        self.send_place_drop(-1.0, -1.0, desktop_id)
+        self.count.set_text(f"Added {entry.display_name} to Home")
+        self.request_hide()
+
+    def toggle_favorite(self, entry):
+        preferences = (
+            Path(os.environ.get("CTLST_LIBEXEC_DIR", Path(__file__).resolve().parent)) / "ctlst-preferences"
+        )
+        desktop_id = entry.app.get_id()
+        if not desktop_id:
+            self.count.set_text(f"{entry.display_name} cannot be added to Home")
+            return
+        try:
+            listed = subprocess.run(
+                [str(preferences), "favorites", "list"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            favorites = json.loads(listed.stdout)
+            if desktop_id in favorites:
+                operation = "remove"
+            elif len(favorites) >= self.favorite_capacity:
+                self.count.set_text(
+                    f"Home is full ({self.favorite_capacity} icon slots)"
+                )
+                return
+            else:
+                operation = "add"
+            changed = subprocess.run(
+                [
+                    str(preferences),
+                    "favorites",
+                    operation,
+                    desktop_id,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except OSError as error:
+            self.count.set_text(f"Could not update Home: {error}")
+            return
+        except json.JSONDecodeError:
+            self.count.set_text("Could not read Home apps")
+            return
+        except subprocess.CalledProcessError as error:
+            detail = (error.stderr or "Could not update favorites").strip()
+            self.count.set_text(detail.removeprefix("ctlst-preferences: "))
+            return
+        try:
+            self.apply_favorites(json.loads(changed.stdout))
+        except json.JSONDecodeError:
+            self.refresh_favorites()
+        self.notify_home_reload()
+        verb = "Removed" if operation == "remove" else "Added"
+        self.count.set_text(f"{verb} {entry.display_name} {'from' if operation == 'remove' else 'to'} Home")
+
+    def on_pin_clicked(self, button):
+        entry = getattr(button.get_parent(), "app_entry", None)
+        if entry is not None and self.editing:
+            self.toggle_favorite(entry)
+
+    def on_hide_clicked(self, button):
+        entry = getattr(button.get_parent(), "app_entry", None)
+        if entry is None or not self.editing:
+            return
+        self.toggle_drawer_visibility(entry)
+
+    def toggle_drawer_visibility(self, entry):
+        preferences = (
+            Path(os.environ.get("CTLST_LIBEXEC_DIR", Path(__file__).resolve().parent)) / "ctlst-preferences"
+        )
+        desktop_id = entry.app.get_id()
+        if not desktop_id:
+            return
+        operation = "remove" if desktop_id in self.hidden_ids else "add"
+        try:
+            changed = subprocess.run(
+                [str(preferences), "drawer-hidden", operation, desktop_id],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            hidden = json.loads(changed.stdout)
+        except (OSError, json.JSONDecodeError, subprocess.CalledProcessError) as error:
+            detail = getattr(error, "stderr", str(error))
+            if isinstance(detail, str):
+                self.count.set_text(detail.strip().removeprefix("ctlst-preferences: "))
+            return
+        self.apply_hidden(hidden)
+        self.count.set_text(f"{'Shown' if operation == 'remove' else 'Hidden'} {entry.display_name} {'in' if operation == 'remove' else 'from'} drawer")
+
+    def refresh_hidden(self):
+        preferences = (
+            Path(os.environ.get("CTLST_LIBEXEC_DIR", Path(__file__).resolve().parent)) / "ctlst-preferences"
+        )
+        try:
+            listed = subprocess.run(
+                [str(preferences), "drawer-hidden", "list"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            hidden = json.loads(listed.stdout)
+        except (OSError, json.JSONDecodeError, subprocess.CalledProcessError):
+            hidden = []
+        self.apply_hidden(hidden)
+
+    def apply_hidden(self, hidden):
+        self.hidden_ids = set(hidden)
+        self.app_filter.changed(Gtk.FilterChange.DIFFERENT)
+        for tile in self.bound_tiles:
+            self.update_tile_layout(tile)
+        self.update_count()
+
+    def on_apps_changed(self, _monitor):
+        if not self.app_reload_source:
+            self.app_reload_source = GLib.timeout_add(150, self.reload_app_store)
+
+    @staticmethod
+    def installed_entries():
+        entries = [
+            AppEntry(app)
+            for app in Gio.AppInfo.get_all()
+            if app.should_show()
+        ]
+        entries.sort(key=lambda entry: entry.display_name.casefold())
+        return entries
+
+    @staticmethod
+    def entries_signature(entries):
+        signature = []
+        for entry in entries:
+            icon = entry.app.get_icon()
+            signature.append((
+                entry.app.get_id(),
+                entry.display_name,
+                icon.to_string() if icon is not None else "",
+            ))
+        return tuple(signature)
+
+    def reload_app_store(self):
+        self.app_reload_source = 0
+        entries = self.installed_entries()
+        signature = self.entries_signature(entries)
+        if signature == self.app_signature:
+            return GLib.SOURCE_REMOVE
+        self.app_signature = signature
+        self.store.remove_all()
+        for entry in entries:
+            entry.favorite = entry.app.get_id() in self.favorite_ids
+            self.store.append(entry)
+        self.app_filter.changed(Gtk.FilterChange.DIFFERENT)
+        self.update_count()
+        return GLib.SOURCE_REMOVE
+
+    def cancel_drop_arm(self):
+        if self.drop_arm_source:
+            GLib.source_remove(self.drop_arm_source)
+            self.drop_arm_source = 0
+        self.drop_pending_tile = None
+
+    def reset_drop_drag(self):
+        """Cancel any armed/active home-drop gesture and hide the ghost."""
+        self.cancel_drop_arm()
+        self.clear_drop_drag()
+
+    def drop_arm_fire(self):
+        self.drop_arm_source = 0
+        if self.editing or self.drop_pending_tile is None:
+            return False
+        entry = getattr(self.drop_pending_tile, "app_entry", None)
+        if entry is None:
+            return False
+        self.drop_tile = self.drop_pending_tile
+        self.start_drop_drag(entry)
+        self.suppress_launch_until = time.monotonic() + 0.75
+        return False
+
+    def start_drop_drag(self, entry):
+        self.drop_entry = entry
+        if self.drop_ghost is None:
+            ghost_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            ghost_box.add_css_class("drawer-drop-ghost")
+            ghost_image = SafeIcon(display_size=DROP_GHOST_ICON_SIZE)
+            ghost_label = Gtk.Label()
+            ghost_label.set_ellipsize(Pango.EllipsizeMode.END)
+            ghost_label.set_max_width_chars(9)
+            ghost_box.append(ghost_image)
+            ghost_box.append(ghost_label)
+            ghost_box.set_can_target(False)
+            ghost_box.set_halign(Gtk.Align.START)
+            ghost_box.set_valign(Gtk.Align.START)
+            self.drop_ghost = ghost_box
+            self.drop_ghost_image = ghost_image
+            self.drop_ghost_label = ghost_label
+            self.drop_overlay.add_overlay(self.drop_ghost)
+        icon = entry.app.get_icon()
+        self.drop_ghost_image.set_icon(
+            icon,
+            entry.display_name,
+            entry.app.get_id(),
+        )
+        self.drop_ghost_label.set_text(entry.display_name)
+        self.drop_ghost.set_visible(True)
+        # Place under the press immediately so it never parks at 0,0 full-size.
+        self.move_drop_ghost_offsets(0.0, 0.0)
+
+    def clear_drop_drag(self):
+        self.drop_entry = None
+        self.drop_tile = None
+        self.drop_committed = False
+        self.drop_last_offset_x = 0.0
+        self.drop_last_offset_y = 0.0
+        if self.drop_ghost is not None:
+            self.drop_ghost.set_visible(False)
+            self.drop_ghost.set_margin_start(0)
+            self.drop_ghost.set_margin_top(0)
+
+    def drop_point_on_overlay(self, offset_x, offset_y):
+        tile = self.drop_tile or self.drop_pending_tile
+        x = self.drop_start_x + offset_x
+        y = self.drop_start_y + offset_y
+        if tile is None or self.drop_overlay is None:
+            return x, y
+        ok, point = tile.compute_point(self.drop_overlay, x, y)
+        if ok:
+            return point.x, point.y
+        return x, y
+
+    def move_drop_ghost_offsets(self, offset_x, offset_y):
+        if self.drop_ghost is None or not self.drop_ghost.get_visible():
+            return
+        x, y = self.drop_point_on_overlay(offset_x, offset_y)
+        width = self.drop_ghost.get_width()
+        height = self.drop_ghost.get_height()
+        if width <= 0 or height <= 0:
+            width = DROP_GHOST_ICON_SIZE + 12
+            height = DROP_GHOST_ICON_SIZE + 24
+        overlay_w = max(width, self.drop_overlay.get_width() if self.drop_overlay else width)
+        overlay_h = max(height, self.drop_overlay.get_height() if self.drop_overlay else height)
+        margin_x = int(max(0, min(overlay_w - width, x - width / 2)))
+        margin_y = int(max(0, min(overlay_h - height, y - height / 2)))
+        self.drop_ghost.set_halign(Gtk.Align.START)
+        self.drop_ghost.set_valign(Gtk.Align.START)
+        self.drop_ghost.set_margin_start(margin_x)
+        self.drop_ghost.set_margin_top(margin_y)
+
+    def widget_to_native(self, widget, x, y):
+        native = self.get_native()
+        if native is None:
+            return x, y
+        ok, point = widget.compute_point(native, x, y)
+        if ok:
+            return point.x, point.y
+        return x, y
+
+    def send_place_drop(self, native_x, native_y, desktop_id):
+        path = os.path.join(
+            os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"),
+            HOME_CONTROL_SOCKET,
+        )
+        # Negative coords mean "auto free cell" — used when the finger is not
+        # over Home's grid (drawer dismiss-drag lands in the bottom chrome).
+        message = f"P{native_x:.1f},{native_y:.1f},{desktop_id}"
+        notifier = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        try:
+            notifier.sendto(message.encode("ascii"), path)
+        except OSError:
+            pass
+        finally:
+            notifier.close()
+
+    def commit_place_drop(self, offset_x=None, offset_y=None):
+        """Send place-to-home once, then clear the floating ghost."""
+        if self.drop_committed or self.drop_entry is None:
+            return False
+        # Offsets unused: drawer coords are not Home grid coords.
+        _ = (offset_x, offset_y)
+        desktop_id = self.drop_entry.app.get_id()
+        if not desktop_id:
+            self.clear_drop_drag()
+            return False
+        # Always auto-seat on Home's next free cell.
+        self.drop_committed = True
+        self.send_place_drop(-1.0, -1.0, desktop_id)
+        self.clear_drop_drag()
+        return True
+
+    def on_drop_drag_begin(self, gesture, start_x, start_y):
+        if self.editing:
+            gesture.set_state(Gtk.EventSequenceState.DENIED)
+            return
+        # A previous cancelled drop must not leave a ghost behind.
+        self.clear_drop_drag()
+        tile = gesture.get_widget()
+        self.drop_pending_tile = tile
+        self.drop_tile = tile
+        self.drop_start_x = start_x
+        self.drop_start_y = start_y
+        self.drop_last_offset_x = 0.0
+        self.drop_last_offset_y = 0.0
+        self.drop_arm_source = GLib.timeout_add(
+            DRAWER_DROP_ARM_MS,
+            self.drop_arm_fire,
+        )
+        gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+
+    def on_drop_drag_update(self, gesture, offset_x, offset_y):
+        self.drop_last_offset_x = offset_x
+        self.drop_last_offset_y = offset_y
+        if self.drop_entry is None:
+            # Still arming: abandon if the finger moved enough to scroll.
+            if abs(offset_x) >= SCROLL_DRAG_THRESHOLD or abs(offset_y) >= SCROLL_DRAG_THRESHOLD:
+                self.cancel_drop_arm()
+            return
+        self.move_drop_ghost_offsets(offset_x, offset_y)
+        _x, y = self.drop_point_on_overlay(offset_x, offset_y)
+        height = max(1, self.get_height())
+        if y >= height * DRAWER_DROP_HIDE_FRACTION:
+            # Place before hide — hiding the layer often cancels the gesture
+            # and would otherwise drop the commit on the floor.
+            if self.commit_place_drop(offset_x, offset_y):
+                self.get_application().hide_window(clear_drop=True)
+
+    def on_drop_drag_end(self, gesture, offset_x, offset_y):
+        self.cancel_drop_arm()
+        self.drop_last_offset_x = offset_x
+        self.drop_last_offset_y = offset_y
+        if self.drop_committed:
+            self.clear_drop_drag()
+            return
+        if self.drop_entry is None:
+            self.clear_drop_drag()
+            return
+        # Any armed drop that ends (even without crossing the dismiss band)
+        # places the app on Home — that is the press-hold contract.
+        if self.commit_place_drop(offset_x, offset_y):
+            self.request_hide()
+
+    def on_drop_drag_cancel(self, _gesture, _sequence):
+        # Hide mid-gesture often arrives as cancel; still place if armed.
+        if self.drop_entry is not None and not self.drop_committed:
+            if self.commit_place_drop():
+                self.request_hide()
+                return
+        self.reset_drop_drag()
+
+    def refresh_favorites(self, force=False):
+        if self.favorite_refresh_pending:
+            return GLib.SOURCE_REMOVE
+        try:
+            current_mtime_ns = PREFERENCES_PATH.stat().st_mtime_ns
+        except OSError:
+            current_mtime_ns = None
+        if not force and current_mtime_ns == self.preferences_mtime_ns:
+            return GLib.SOURCE_REMOVE
+        self.favorite_refresh_pending = True
+        preferences = (
+            Path(os.environ.get("CTLST_LIBEXEC_DIR", Path(__file__).resolve().parent)) / "ctlst-preferences"
+        )
+
+        def load():
+            favorites = None
+            try:
+                listed = subprocess.run(
+                    [str(preferences), "favorites", "list"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                favorites = json.loads(listed.stdout)
+            except (OSError, json.JSONDecodeError, subprocess.CalledProcessError):
+                pass
+            GLib.idle_add(self.finish_favorites_refresh, favorites)
+
+        threading.Thread(target=load, daemon=True).start()
+        return GLib.SOURCE_REMOVE
+
+    def finish_favorites_refresh(self, favorites):
+        self.favorite_refresh_pending = False
+        if favorites is not None:
+            try:
+                self.preferences_mtime_ns = PREFERENCES_PATH.stat().st_mtime_ns
+            except OSError:
+                self.preferences_mtime_ns = None
+            self.favorite_capacity = favorite_slot_capacity()
+            self.apply_favorites(favorites)
+            self.update_count()
+        return GLib.SOURCE_REMOVE
+
+    def apply_favorites(self, favorites):
+        favorite_ids = set(favorites)
+        favorite_list = list(favorites)
+        self.favorite_ids = favorite_ids
+        self.favorite_list = favorite_list
+        for position in range(self.store.get_n_items()):
+            entry = self.store.get_item(position)
+            favorite = entry.app.get_id() in self.favorite_ids
+            if entry.favorite != favorite:
+                entry.favorite = favorite
+
+    def notify_home_reload(self):
+        path = os.path.join(
+            os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"),
+            HOME_CONTROL_SOCKET,
+        )
+        notifier = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        try:
+            notifier.sendto(b"R", path)
+        except OSError:
+            pass
+        finally:
+            notifier.close()
+
+    def filter_app(self, entry):
+        desktop_id = entry.app.get_id()
+        if not self.editing and desktop_id and desktop_id in self.hidden_ids:
+            return False
+        query = self.search.get_text().strip().casefold()
+        return not query or query in entry.search_text
+
+    def on_search_changed(self, _entry):
+        self.app_filter.changed(Gtk.FilterChange.DIFFERENT)
+        self.update_count()
+
+    def update_count(self):
+        count = len(self.favorite_ids)
+        capacity = self.favorite_capacity
+        total = self.filtered.get_n_items()
+        hidden_hint = f" · {len(self.hidden_ids)} hidden" if self.hidden_ids else ""
+        self.count.set_text(f"{count}/{capacity} Home{hidden_hint}" if self.editing else f"{total} apps")
+        self.scroller.set_visible(total > 0)
+        self.empty_state.set_visible(total == 0)
+        searching = bool(self.search.get_text().strip())
+        self.empty_label.set_text("No matching apps" if searching else "No visible apps")
+        self.clear_search.set_visible(searching)
+
+    def launch_app(self, _grid, position):
+        if self.editing or time.monotonic() < self.suppress_launch_until:
+            return
+        entry = self.filtered.get_item(position)
+        try:
+            subprocess.Popen(
+                [
+                    str(Path(os.environ.get("CTLST_LIBEXEC_DIR", Path(__file__).resolve().parent)) / "app-run"),
+                    "desktop",
+                    entry.app.get_id(),
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError as error:
+            self.count.set_text(f"Could not launch: {error}")
+            return
+        self.request_hide()
+
+    def request_hide(self):
+        self.get_application().hide_window(clear_drop=True)
+
+    def on_close_request(self, _window):
+        self.request_hide()
+        return True
+
+    def focus_canvas(self):
+        if not self.search_engaged:
+            self.initial_focus.grab_focus()
+        return GLib.SOURCE_REMOVE
+
+    def on_search_touched(self, _gesture, _presses, _x, _y):
+        self.search_engaged = True
+
+    def on_key_pressed(self, _controller, keyval, _keycode, _state):
+        if keyval == Gdk.KEY_Escape:
+            self.request_hide()
+            return True
+        if _state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK |
+                     Gdk.ModifierType.SUPER_MASK):
+            return False
+        focus = self.get_focus()
+        search_focused = focus is self.search or (
+            focus is not None and focus.is_ancestor(self.search))
+        if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter) and (
+                search_focused or focus is self.initial_focus):
+            # GtkSearchEntry delays search-changed. Enter must use the text
+            # already on screen, never the first item from the previous query.
+            self.on_search_changed(self.search)
+            if self.filtered.get_n_items():
+                self.launch_app(self.grid, 0)
+            return True
+        if keyval == Gdk.KEY_space and focus is not self.initial_focus:
+            return False
+        codepoint = Gdk.keyval_to_unicode(keyval)
+        if not search_focused and codepoint:
+            character = chr(codepoint)
+            if character.isprintable():
+                self.search_engaged = True
+                self.search.grab_focus()
+                self.search.set_text(character)
+                self.search.set_position(-1)
+                return True
+        return False
+
+
+class DrawerApplication(Gtk.Application):
+    def __init__(self):
+        super().__init__(
+            application_id="dev.ctlst.Drawer",
+            flags=Gio.ApplicationFlags.DEFAULT_FLAGS,
+        )
+        self.suppress_first_activation = (
+            os.environ.get("CTLST_DRAWER_RESIDENT") == "1"
+        )
+        self.window = None
+        self.pid_file = os.path.join(
+            os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"),
+            "ctlstdrawer-resident.pid",
+        )
+        self.runtime_dir = os.path.dirname(self.pid_file)
+        self.visible_file = os.path.join(
+            self.runtime_dir,
+            "ctlstdrawer.visible",
+        )
+        self.control_path = os.path.join(
+            self.runtime_dir,
+            DRAWER_CONTROL_SOCKET,
+        )
+        self.gesture_path = os.path.join(
+            self.runtime_dir,
+            GESTURE_CONTROL_SOCKET,
+        )
+        self.control_socket = None
+        self.control_watch = 0
+
+    def do_startup(self):
+        Gtk.Application.do_startup(self)
+        self.hold()
+        try:
+            os.unlink(self.control_path)
+        except FileNotFoundError:
+            pass
+        self.control_socket = socket.socket(
+            socket.AF_UNIX,
+            socket.SOCK_DGRAM,
+        )
+        self.control_socket.setblocking(False)
+        self.control_socket.bind(self.control_path)
+        os.chmod(self.control_path, 0o600)
+        self.control_watch = GLib.io_add_watch(
+            self.control_socket.fileno(),
+            GLib.IO_IN,
+            self.on_control_message,
+        )
+        self.window = CtlstDrawer(self)
+        with open(self.pid_file, "w", encoding="ascii") as pid_file:
+            pid_file.write(f"{os.getpid()}\n")
+
+        for name, callback in (
+            ("show", self.on_show),
+            ("hide", self.on_hide),
+        ):
+            action = Gio.SimpleAction.new(name, None)
+            action.connect("activate", callback)
+            self.add_action(action)
+
+    def do_activate(self):
+        if self.suppress_first_activation:
+            self.suppress_first_activation = False
+            return
+        self.show_window()
+
+    def do_shutdown(self):
+        self.set_visible_state(False)
+        if self.control_watch:
+            GLib.source_remove(self.control_watch)
+            self.control_watch = 0
+        if self.control_socket is not None:
+            self.control_socket.close()
+            self.control_socket = None
+        try:
+            os.unlink(self.control_path)
+        except FileNotFoundError:
+            pass
+        try:
+            with open(self.pid_file, encoding="ascii") as pid_file:
+                owner = int(pid_file.read().strip())
+            if owner == os.getpid():
+                os.unlink(self.pid_file)
+        except (FileNotFoundError, ValueError):
+            pass
+        Gtk.Application.do_shutdown(self)
+
+    def on_show(self, _action, _parameter):
+        self.show_window()
+
+    def on_hide(self, _action, _parameter):
+        self.hide_window(clear_drop=True)
+
+    def on_control_message(self, _source, _condition):
+        pending_progress = None
+        while True:
+            try:
+                command = self.control_socket.recv(32)
+            except BlockingIOError:
+                break
+            if command[:1] == b"S":
+                pending_progress = None
+                self.show_window()
+            elif command[:1] == b"H":
+                pending_progress = None
+                self.hide_window(clear_drop=True)
+            elif command[:1] == b"T":
+                self.window.reload_theme()
+            elif command.startswith(b"P "):
+                try:
+                    pending_progress = max(0, int(command[2:]))
+                except ValueError:
+                    continue
+        if pending_progress is not None:
+            self.show_window(offset_y=pending_progress, focus=False)
+        return GLib.SOURCE_CONTINUE
+
+    def notify_gesture_daemon(self, state):
+        notifier = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        try:
+            notifier.sendto(state, self.gesture_path)
+        except OSError:
+            pass
+        finally:
+            notifier.close()
+
+    def set_visible_state(self, visible):
+        if visible:
+            if os.path.exists(self.visible_file):
+                return
+            with open(self.visible_file, "w", encoding="ascii"):
+                pass
+            self.notify_gesture_daemon(b"v")
+            return
+        try:
+            os.unlink(self.visible_file)
+        except FileNotFoundError:
+            pass
+        self.notify_gesture_daemon(b"h")
+
+    def show_window(self, offset_y=0, focus=True):
+        was_visible = os.path.exists(self.visible_file)
+        Gtk4LayerShell.set_keyboard_mode(
+            self.window, Gtk4LayerShell.KeyboardMode.EXCLUSIVE if focus
+            else Gtk4LayerShell.KeyboardMode.ON_DEMAND,
+        )
+        # Never re-open with a leftover press-hold ghost from a cancelled drop.
+        if self.window is not None and self.window.drop_entry is None:
+            self.window.reset_drop_drag()
+        should_settle = (
+            was_visible
+            and offset_y == 0
+            and self.window.motion_panel.translation_y > 0
+        )
+        if should_settle:
+            self.window.motion_panel.animate_to(0)
+        else:
+            self.window.motion_panel.set_translation(offset_y)
+        if not was_visible:
+            self.window.search.set_text("")
+            self.window.search_engaged = False
+            if focus:
+                self.window.present()
+            else:
+                self.window.set_visible(True)
+        elif focus:
+            self.window.present()
+        self.set_visible_state(True)
+        if not was_visible:
+            # Map the first frame before touching preferences or the app model.
+            GLib.idle_add(self.window.refresh_favorites)
+        if focus:
+            GLib.idle_add(self.window.focus_canvas)
+
+    def hide_window(self, clear_drop=True):
+        if clear_drop and self.window is not None:
+            self.window.reset_drop_drag()
+        self.window.set_visible(False)
+        Gtk4LayerShell.set_keyboard_mode(self.window, Gtk4LayerShell.KeyboardMode.NONE)
+        self.window.motion_panel.set_translation(0)
+        self.set_visible_state(False)
+
+
+raise SystemExit(DrawerApplication().run(None))

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Settings
+Comment=CTLST shell settings
+Exec=ctlst-settings
+Icon=dev.ctlst.Settings
+Terminal=false
+Type=Application
+Categories=Settings;
+Keywords=Settings;Wallpaper;Theme;Wi-Fi;Bluetooth;
+StartupNotify=true

@@ -1,0 +1,13 @@
+# Required to build the native CTLST shell binaries and keyboard fork.
+build-base
+cairo-dev
+gtk4-layer-shell-dev
+gtk4.0-dev
+json-c-dev
+libepoxy-dev
+libinput-dev
+libxkbcommon-dev
+pango-dev
+pkgconf
+sqlite-dev
+wayland-dev

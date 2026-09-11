@@ -1,0 +1,2 @@
+#!/bin/sh
+exec "${CTLST_LIBEXEC_DIR:-/usr/libexec/ctlst-shell}/ctlst-settings" "$@"

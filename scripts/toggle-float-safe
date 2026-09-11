@@ -1,0 +1,25 @@
+#!/bin/sh
+set -eu
+
+node="$(swaymsg -r -t get_tree |
+    jq -c '[.. | objects |
+        select(.focused? == true and
+               (.type? == "con" or .type? == "floating_con"))][-1]')"
+[ "$node" != null ] || exit 0
+
+id="$(printf '%s\n' "$node" | jq -r '.id')"
+floating="$(printf '%s\n' "$node" | jq -r '.floating')"
+
+case "$floating" in
+    auto_on|user_on)
+        swaymsg "[con_id=$id] floating disable, border normal 5, title_format \"%title\"" \
+            >/dev/null
+        ;;
+    *)
+        swaymsg \
+            "[con_id=$id] floating enable, border normal 5, title_format \"%title  ⤢\", move position center" \
+            >/dev/null
+        sleep 0.08
+        exec "${CTLST_LIBEXEC_DIR:-/usr/libexec/ctlst-shell}/clamp-floating"
+        ;;
+esac

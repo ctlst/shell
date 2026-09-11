@@ -1,0 +1,98 @@
+#!/bin/sh
+set -eu
+
+workspace="${1:-}"
+command="${2:-status}"
+runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+session_env="$runtime_dir/sway-touch/session.env"
+
+refresh_session_env() {
+    if [ -r "$session_env" ]; then
+        set -a
+        . "$session_env"
+        set +a
+    fi
+}
+
+if [ "$workspace" = daemon ]; then
+    pid_file="$runtime_dir/ctlst-workspace-buttons.pid"
+    if [ -s "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+        exit 0
+    fi
+    printf '%s\n' "$$" >"$pid_file"
+    subscriber_pid=
+    subscription_dir=
+    cleanup_subscription() {
+        if [ -n "$subscriber_pid" ]; then
+            kill "$subscriber_pid" 2>/dev/null || true
+            wait "$subscriber_pid" 2>/dev/null || true
+        fi
+        [ -n "$subscription_dir" ] && rm -rf "$subscription_dir"
+    }
+    cleanup_daemon() {
+        cleanup_subscription
+        [ "$(cat "$pid_file" 2>/dev/null || true)" = "$$" ] && rm -f "$pid_file"
+    }
+    trap cleanup_daemon 0
+    trap 'exit 0' INT TERM
+    subscription_dir=$(mktemp -d "${TMPDIR:-/tmp}/workspace-button.XXXXXX")
+    fifo="$subscription_dir/events"
+    mkfifo "$fifo"
+    while :; do
+        refresh_session_env
+        swaymsg -m -t subscribe '["workspace"]' >"$fifo" &
+        subscriber_pid=$!
+        while IFS= read -r event; do
+            if printf '%s\n' "$event" | jq -e '.change == "focus"' >/dev/null; then
+                "${CTLST_LIBEXEC_DIR:-/usr/libexec/ctlst-shell}/workspace-transients-close"
+                pkill -RTMIN+9 -x waybar 2>/dev/null || true
+            fi
+        done <"$fifo"
+        wait "$subscriber_pid" 2>/dev/null || true
+        subscriber_pid=
+        sleep 0.5
+    done
+    exit 0
+fi
+
+case "$workspace" in
+    1|2|3|4|5) ;;
+    *) exit 2 ;;
+esac
+
+emit_status() {
+    state="$(swaymsg -r -t get_workspaces | jq -r --argjson number "$workspace" '
+        [.[] | select(.num == $number)][0] as $item |
+        if $item.focused then "focused"
+        elif $item.urgent then "urgent"
+        else "idle"
+        end
+    ')"
+    if [ "$workspace" -eq 1 ]; then
+        label=H
+    else
+        label=$((workspace - 1))
+    fi
+    printf '{"text":"%s","class":"%s"}\n' "$label" "$state"
+}
+
+case "$command" in
+    select)
+        "${CTLST_LIBEXEC_DIR:-/usr/libexec/ctlst-shell}/workspace-transients-close"
+        gesture_socket="$runtime_dir/ctlst-gestures.sock"
+        [ -S "$gesture_socket" ] || exit 1
+        printf 'w%s' "$workspace" |
+            socat - "UNIX-SENDTO:$gesture_socket"
+        ;;
+    status)
+        emit_status
+        ;;
+    watch)
+        refresh_session_env
+        while :; do
+            emit_status
+            sleep 0.25
+        done
+        ;;
+    *) exit 2 ;;
+esac

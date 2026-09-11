@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""Launch installed applications through the shared workspace/config authority."""
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+from ctlst_config import generated_root, libexec_root, resolved
+
+
+def desktop_path(desktop_id):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*\.desktop", desktop_id):
+        raise ValueError("invalid desktop ID")
+    roots = [Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))]
+    roots += [Path(p) for p in os.environ.get("XDG_DATA_DIRS", "/usr/local/share:/usr/share").split(":") if p]
+    for root in roots:
+        path = root / "applications" / desktop_id
+        if path.is_file():
+            return path
+    raise ValueError(f"application is not installed: {desktop_id}")
+
+
+def plan(arguments):
+    if len(arguments) < 2:
+        raise ValueError("usage: app-run {desktop ID|command LABEL COMMAND...|command-new LABEL COMMAND...|role ROLE}")
+    mode, label, *rest = arguments
+    if mode == "role":
+        apps, _ = resolved("applications")
+        if not apps.has_option("applications", label):
+            raise ValueError(f"unknown application role: {label}")
+        handler = apps.get("applications", label)
+        if handler in ("none", "auto", "xdg"):
+            if label == "files":
+                return plan(["command", "files", "xdg-open", str(Path.home()), *rest])
+            raise ValueError(f"configure a handler for {label} in applications.conf")
+        if handler.endswith(".desktop"):
+            return plan(["desktop", handler, *rest])
+        if label == "launcher" and handler == "ctlstdrawer":
+            handler = str(libexec_root() / "ctlstdrawer")
+        if label == "terminal" and handler == "foot" and (generated_root() / "foot.ini").is_file():
+            rest = [f"--config={generated_root() / 'foot.ini'}", *rest]
+        return plan(["command-new" if label == "terminal" else "command", label, handler, *rest])
+    if mode == "desktop":
+        command = ["gio", "launch", str(desktop_path(label)), *rest]
+    elif mode in ("command", "command-new") and rest:
+        command = rest
+    else:
+        raise ValueError("invalid launch mode or missing command")
+    memory, _ = resolved("memory")
+    section = "terminal" if label in ("foot", "foot.desktop", "terminal", "dev.ctlst.Terminal.desktop") else "app"
+    limits = {
+        "MemoryHigh": memory.getint(section, "memory_high_bytes"),
+        "MemoryMax": memory.getint(section, "memory_max_bytes"),
+        "MemorySwapMax": memory.getint(section, "memory_swap_max_bytes"),
+    }
+    return {"label": label, "mode": mode, "command": command, "limits": limits}
+
+
+def main():
+    arguments = sys.argv[1:]
+    explain = arguments[:1] == ["--explain"]
+    if explain:
+        arguments = arguments[1:]
+    launch = plan(arguments)
+    if explain:
+        print(json.dumps(launch, sort_keys=True))
+        return 0
+    prepare = "prepare-launch-new" if launch["mode"] == "command-new" else "prepare-launch"
+    result = subprocess.run([str(libexec_root() / "ctlst-workspaced"), prepare, launch["label"]], check=False)
+    if result.returncode == 10:
+        return 0
+    if result.returncode:
+        return result.returncode
+    command = launch["command"]
+    limits = launch["limits"]
+    if any(limits.values()):
+        if not shutil.which("systemd-run") or subprocess.run(
+            ["systemctl", "--user", "show-environment"], capture_output=True
+        ).returncode:
+            raise ValueError("configured memory limits require a working systemd user manager")
+        unit = re.sub(r"[^a-zA-Z0-9_.-]", "-", launch["label"])[:48]
+        command = ["systemd-run", "--user", "--scope", "--collect",
+                   f"--unit=ctlst-app-{unit}-{os.getpid()}",
+                   *[f"--property={k}={v}" for k, v in limits.items() if v],
+                   "--", *command]
+    os.execvpe(command[0], command, os.environ.copy())
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (ValueError, OSError) as error:
+        print(f"app-run: {error}", file=sys.stderr)
+        if shutil.which("notify-send"):
+            subprocess.run(["notify-send", "Application could not start", str(error)], check=False)
+        raise SystemExit(1)

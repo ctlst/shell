@@ -1,0 +1,8 @@
+/* Optional GTK styling, layered after the selected CTLST theme.
+ * Copy/edit via: ctlst-session config edit theme-style
+ * User file: ${XDG_CONFIG_HOME:-$HOME/.config}/ctlst/theme-style.css
+ * Apply: ctlst-session reload (also reapplied when changing themes).
+ * Same-specificity user rules follow packaged/profile/system rules.
+ * Example: window#ctlstdrawer .drawer-title { font-size: 26px; }
+ * This styles GTK nodes, not custom-drawn GSK geometry or unrelated apps.
+ */

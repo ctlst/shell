@@ -1,0 +1,14 @@
+# Plain-text note preview; configure the file and editor in ctlst/notes.conf.
+# Deployed to ~/.local/share/sway-touch/widgets/notes.yaml
+id: notes
+name: Notes
+kind: exec
+protocol: ctlst-widget-1
+interaction: launch
+min_columns: 2
+min_rows: 2
+default_columns: 2
+default_rows: 2
+exec: ctlst-home-notes
+args: []
+desktop: dev.ctlst.Notes.desktop

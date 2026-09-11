@@ -1,0 +1,468 @@
+#!/usr/bin/env python3
+"""Resident workspace thumbnail cache for ctlstoverview.
+
+Subscribes to Sway workspace/window/output events, debounces (>=300ms), and captures
+the currently focused non-Home workspace with grim into a private cache dir:
+
+  $XDG_CACHE_HOME/sway-touch/workspaces/<safe-key>.png
+
+Never shells workspace names or paths (fixed argv only). Does not block gesture
+handling — capture runs in a short worker after debounce. Skips capture while
+overview is visible so the overlay is not baked into thumbnails.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import signal
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+DEBOUNCE_SEC = 0.30
+MIN_CAPTURE_INTERVAL_SEC = 0.45
+HOME_WORKSPACE_NAMES = frozenset({"1", "home", "Home", "HOME"})
+PID_NAME = "ctlst-workspace-card-cache.pid"
+OVERVIEW_CAPTURE_STATE = "ctlstoverview.capture"
+OVERVIEW_HIDDEN_TICK = "ctlst-overview-hidden"
+BLOCKING_SURFACES = (
+    "ctlstlock.visible",
+    "ctlstoverview.visible",
+    "ctlstdrawer.visible",
+    "ctlstshade.visible",
+    "ctlstpad.visible",
+)
+
+
+def runtime_dir() -> Path:
+    return Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
+
+
+def cache_dir() -> Path:
+    base = Path(os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache"))
+    return base / "sway-touch" / "workspaces"
+
+
+def safe_workspace_key(name: str) -> str:
+    """Return a readable, collision-resistant filesystem key."""
+    raw = name.encode("utf-8")
+    fingerprint = 0x14650FB0739D0383
+    for byte in raw:
+        fingerprint ^= byte
+        fingerprint = (fingerprint * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    out = []
+    for ch in name[:53]:
+        if ch.isalnum() or ch in "._-":
+            out.append(ch)
+        else:
+            out.append("_")
+    key = "".join(out).strip("._-") or "unknown"
+    return f"ws-{key}-{fingerprint:016x}"
+
+
+def cache_path_for(name: str) -> Path:
+    return cache_dir() / f"{safe_workspace_key(name)}.png"
+
+
+def write_pid() -> Path:
+    path = runtime_dir() / PID_NAME
+    path.write_text(f"{os.getpid()}\n", encoding="ascii")
+    return path
+
+
+def clear_pid(path: Path) -> None:
+    try:
+        if path.is_file() and path.read_text(encoding="ascii").strip() == str(os.getpid()):
+            path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def swaymsg_json(args: List[str]) -> Any:
+    env = os.environ.copy()
+    cmd = ["swaymsg", "-r", *args]
+    try:
+        proc = subprocess.run(
+            cmd,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            env=env,
+            timeout=4,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0 or not proc.stdout:
+        return None
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return None
+
+
+def overview_capture_token() -> Optional[str]:
+    """Persistent idle generation detects even an open-and-close during grim.
+
+    Missing state supports older Overview builds. Invalid/unreadable state is
+    blocked, not permission to capture; a new Overview process resets it.
+    """
+    try:
+        value = (runtime_dir() / OVERVIEW_CAPTURE_STATE).read_text(encoding="ascii")
+    except FileNotFoundError:
+        return ""
+    except (OSError, UnicodeError):
+        return None
+    fields = value.split()
+    generation = fields[1].split(":") if len(fields) == 2 else []
+    return value if (fields and fields[0] == "idle" and value.endswith("\n")
+                     and len(generation) == 3
+                     and all(part.isascii() and part.isdecimal() for part in generation)) else None
+
+
+def shell_surface_visible() -> bool:
+    runtime = runtime_dir()
+    return overview_capture_token() is None or any(
+        (runtime / marker).exists() for marker in BLOCKING_SURFACES)
+
+
+def walk_nodes(node: Dict[str, Any]):
+    yield node
+    for key in ("nodes", "floating_nodes"):
+        children = node.get(key)
+        if isinstance(children, list):
+            for child in children:
+                if isinstance(child, dict):
+                    yield from walk_nodes(child)
+
+
+def find_focused_workspace(tree: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    focused_ws = None
+    for node in walk_nodes(tree):
+        if node.get("type") != "workspace":
+            continue
+        name = str(node.get("name") or "")
+        if name in HOME_WORKSPACE_NAMES:
+            continue
+        if name.startswith("__"):
+            continue
+        if node.get("focused"):
+            return node
+        # Prefer workspace that contains a focused leaf
+        for child in walk_nodes(node):
+            if child is node:
+                continue
+            if child.get("focused") and child.get("type") in ("con", "floating_con"):
+                focused_ws = node
+    return focused_ws
+
+
+def workspace_has_app_leaf(ws: Dict[str, Any]) -> bool:
+    for node in walk_nodes(ws):
+        if node.get("type") not in ("con", "floating_con"):
+            continue
+        nodes = node.get("nodes") or []
+        floating = node.get("floating_nodes") or []
+        if nodes or floating:
+            continue
+        app_id = str(node.get("app_id") or "")
+        name = str(node.get("name") or "")
+        if not app_id and not name:
+            continue
+        # skip pure shell layers if they appear
+        for token in (
+            "dev.ctlst.Drawer",
+            "dev.ctlst.Overview",
+            "dev.ctlst.Pad",
+            "waybar",
+            "wvkbd",
+            "ctlstshade",
+            "window-drop-overlay",
+        ):
+            if token in app_id:
+                break
+        else:
+            return True
+    return False
+
+
+def workspace_geometry(ws: Dict[str, Any]) -> Optional[Tuple[int, int, int, int]]:
+    rect = ws.get("rect")
+    if not isinstance(rect, dict):
+        return None
+    try:
+        x = int(rect["x"])
+        y = int(rect["y"])
+        w = int(rect["width"])
+        h = int(rect["height"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if w < 32 or h < 32:
+        return None
+    return x, y, w, h
+
+
+def workspace_signature(ws: Dict[str, Any]) -> Tuple[Any, ...]:
+    """Identity and layout, excluding noisy titles that do not change ownership."""
+    members = tuple((node.get("type"), node.get("id"), node.get("app_id"),
+                     workspace_geometry(node)) for node in walk_nodes(ws)
+                    if node.get("type") in ("con", "floating_con"))
+    return ws.get("id"), ws.get("name"), workspace_geometry(ws), members
+
+
+def capture_workspace(name: str, geom: Tuple[int, int, int, int],
+                      validate: Optional[Callable[[], bool]] = None) -> bool:
+    token = overview_capture_token()
+    if token is None or shell_surface_visible():
+        return False
+    x, y, w, h = geom
+    # Geometry string is numeric only — never interpolated user titles.
+    geometry = f"{x},{y} {w}x{h}"
+    dest = cache_path_for(name)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    # Private files
+    old_umask = os.umask(0o077)
+    try:
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=".ws-thumb-",
+            suffix=".png",
+            dir=str(dest.parent),
+        )
+        os.close(fd)
+        tmp_path = Path(tmp_name)
+        try:
+            proc = subprocess.run(
+                ["grim", "-s", "1", "-g", geometry, str(tmp_path)],
+                check=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=6,
+            )
+            if proc.returncode != 0 or not tmp_path.is_file() or tmp_path.stat().st_size < 32:
+                tmp_path.unlink(missing_ok=True)
+                return False
+            # grim may have started before a rotation, focus change or overlay.
+            # Keep the previous good image unless ownership stayed stable.
+            if (shell_surface_visible() or overview_capture_token() != token
+                    or (validate is not None and not validate())
+                    or shell_surface_visible() or overview_capture_token() != token):
+                tmp_path.unlink(missing_ok=True)
+                return False
+            os.replace(str(tmp_path), str(dest))
+            try:
+                os.chmod(dest, 0o600)
+            except OSError:
+                pass
+            return True
+        except (OSError, subprocess.TimeoutExpired):
+            tmp_path.unlink(missing_ok=True)
+            return False
+    finally:
+        os.umask(old_umask)
+
+
+class CacheDaemon:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._timer: Optional[threading.Timer] = None
+        self._stop = threading.Event()
+        self._last_capture = 0.0
+        self._worker: Optional[threading.Thread] = None
+        self._subscriber: Optional[subprocess.Popen[str]] = None
+        self._generation = 0
+
+    def attach_subscriber(self, process: subprocess.Popen[str]) -> None:
+        with self._lock:
+            self._subscriber = process
+
+    def schedule(self) -> None:
+        with self._lock:
+            if self._stop.is_set():
+                return
+            self._generation += 1
+            if self._timer is not None:
+                self._timer.cancel()
+            self._timer = threading.Timer(DEBOUNCE_SEC, self._on_debounce)
+            self._timer.daemon = True
+            self._timer.start()
+
+    def _on_debounce(self) -> None:
+        if self._stop.is_set():
+            return
+        now = time.monotonic()
+        with self._lock:
+            wait = MIN_CAPTURE_INTERVAL_SEC - (now - self._last_capture)
+            if wait > 0:
+                self._timer = threading.Timer(wait, self._on_debounce)
+                self._timer.daemon = True
+                self._timer.start()
+                return
+            if self._worker is not None and self._worker.is_alive():
+                # Coalesce: reschedule after the worker finishes interval
+                self._timer = threading.Timer(DEBOUNCE_SEC, self._on_debounce)
+                self._timer.daemon = True
+                self._timer.start()
+                return
+            self._last_capture = now
+            self._worker = threading.Thread(target=self._capture_once, daemon=True)
+            self._worker.start()
+
+    def _capture_once(self) -> None:
+        if self._stop.is_set() or shell_surface_visible():
+            return
+        with self._lock:
+            generation = self._generation
+        tree = swaymsg_json(["-t", "get_tree"])
+        if not isinstance(tree, dict):
+            return
+        ws = find_focused_workspace(tree)
+        if ws is None:
+            return
+        name = str(ws.get("name") or "")
+        if name in HOME_WORKSPACE_NAMES or name.startswith("__"):
+            return
+        if not workspace_has_app_leaf(ws):
+            return
+        geom = workspace_geometry(ws)
+        if geom is None:
+            return
+        signature = workspace_signature(ws)
+
+        def current() -> bool:
+            if self._stop.is_set():
+                return False
+            with self._lock:
+                if generation != self._generation:
+                    return False
+            return True
+
+        def validate() -> bool:
+            if not current() or shell_surface_visible():
+                return False
+            after = swaymsg_json(["-t", "get_tree"])
+            latest = find_focused_workspace(after) if isinstance(after, dict) else None
+            return (latest is not None and workspace_signature(latest) == signature
+                    and current())
+
+        if current():
+            capture_workspace(name, geom, validate=validate)
+
+    def stop(self) -> None:
+        self._stop.set()
+        with self._lock:
+            if self._timer is not None:
+                self._timer.cancel()
+                self._timer = None
+            subscriber = self._subscriber
+            self._subscriber = None
+        if subscriber is not None and subscriber.poll() is None:
+            try:
+                subscriber.terminate()
+            except OSError:
+                pass
+
+
+def subscribe_loop(daemon: CacheDaemon) -> int:
+    # Fixed argv; event types are literals.
+    cmd = [
+        "swaymsg",
+        "-t",
+        "subscribe",
+        "-m",
+        '["workspace","window","output","tick"]',
+    ]
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except OSError as exc:
+        print(f"workspace-card-cache: cannot start swaymsg: {exc}", file=sys.stderr)
+        return 1
+
+    daemon.attach_subscriber(proc)
+    assert proc.stdout is not None
+    # Initial capture after settle
+    daemon.schedule()
+    try:
+        for line in proc.stdout:
+            if daemon._stop.is_set():
+                break
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if "payload" in event:
+                if event.get("payload") == OVERVIEW_HIDDEN_TICK:
+                    daemon.schedule()
+                continue
+            change = str(event.get("change") or "")
+            if change != "title":
+                daemon.schedule()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        daemon.stop()
+        try:
+            proc.terminate()
+        except OSError:
+            pass
+    return 0
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    args = list(argv) if argv is not None else sys.argv[1:]
+    if args and args[0] in ("-h", "--help"):
+        print(__doc__)
+        return 0
+    if args and args[0] == "key":
+        # Debug helper: print safe key for a name (argv only, no shell).
+        name = args[1] if len(args) > 1 else ""
+        print(safe_workspace_key(name))
+        return 0
+    if args and args[0] == "once":
+        # Single capture for tests / manual smoke (still non-interactive).
+        d = CacheDaemon()
+        d._capture_once()
+        return 0
+
+    # Singleton via pid file best-effort
+    pid_path = runtime_dir() / PID_NAME
+    if pid_path.is_file():
+        try:
+            old = int(pid_path.read_text(encoding="ascii").strip())
+            os.kill(old, 0)
+            # already running
+            return 0
+        except (ValueError, OSError, ProcessLookupError):
+            pass
+
+    runtime_dir().mkdir(parents=True, exist_ok=True)
+    cache_dir().mkdir(parents=True, exist_ok=True)
+    written = write_pid()
+    daemon = CacheDaemon()
+
+    def handle_signal(signum: int, frame: Any) -> None:
+        del signum, frame
+        daemon.stop()
+
+    signal.signal(signal.SIGTERM, handle_signal)
+    signal.signal(signal.SIGINT, handle_signal)
+    try:
+        return subscribe_loop(daemon)
+    finally:
+        clear_pid(written)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,51 @@
+# CTLST Home tunables — copy to ~/.config/ctlst/home.yaml
+# Missing keys keep baked defaults from ctlsthome (see HOME-V2.md).
+version: 1
+
+grid:
+  columns: 5
+  rows: 7
+  spacing_px: 10
+  # Four widget rows above a three-row app strip. In landscape the widgets
+  # keep this layout while the app strip transposes into the right-side dock.
+  cluster_rows: 4
+
+# Edit-only preview; controls retain their normal touch size. Reload with T.
+edit:
+  inset_px: 12
+  controls_gap_px: 12
+
+drag:
+  icon_arm_ms: 350
+  push_dwell_ms: 280
+  cell_switch_fraction: 0.24
+  remove_zone_fraction: 0.16
+
+page:
+  snap_fraction: 0.5
+  fling_velocity: 0.35
+  animation_ms: 220
+  edge_px: 48
+  edge_dwell_ms: 200
+  max_pages: 8
+
+# Disc diameter in px (matches app drawer .app-icon-disc 56px / glyph 44px).
+# min=max locks size; scale is unused when both clamps are equal.
+launcher:
+  icon_scale: 1.0
+  icon_min_px: 56
+  icon_max_px: 56
+
+calendar:
+  month_min_columns: 3
+  month_min_rows: 2
+  # Show the compact date instead of clipping a month in a short card.
+  month_min_height_px: 160
+
+rotation:
+  # Ordinary Sway rotation. Old spring/cache timing keys are ignored.
+  transition: none
+
+widgets:
+  enabled: []
+  hidden: []

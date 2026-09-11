@@ -1,0 +1,143 @@
+* {
+  border: none;
+  border-radius: 0;
+  min-height: 0;
+  font-family: "Noto Sans", sans-serif;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+window#waybar { color: @SHELL_TEXT_CSS@; background: transparent; }
+window#waybar.status {
+  color: @SHELL_TEXT_CSS@;
+  background: @SHELL_OVERLAY_CSS@;
+  border-bottom: 1px solid @SHELL_LINE_SOFT_CSS@;
+  box-shadow: none;
+}
+window#waybar.controls { background: transparent; box-shadow: none; }
+
+#custom-apps,
+#custom-term,
+#custom-phone,
+#custom-messages,
+#custom-pad,
+#custom-keyboard,
+#custom-rotate,
+#custom-close,
+#custom-power {
+  min-height: 38px;
+  min-width: 38px;
+  margin: 4px 2px;
+  padding: 0 10px;
+  border-radius: 20px;
+  color: @SHELL_TEXT_CSS@;
+  background: @SHELL_PANEL_CSS@;
+  box-shadow: none;
+}
+#custom-apps,
+#custom-messages,
+#custom-keyboard { background: @SHELL_PANEL_ALT_CSS@; }
+#custom-phone,
+#custom-pad { background: @SHELL_ACCENT_SOFT_CSS@; }
+#custom-rotate { background: @SHELL_RAISED_CSS@; }
+#custom-close,
+#custom-power { color: @SHELL_SELECTED_TEXT_CSS@; background: @SHELL_DANGER_CSS@; }
+#custom-phone.unread,
+#custom-messages.unread { color: @SHELL_SELECTED_TEXT_CSS@; background: @SHELL_WARM_CSS@; }
+
+#custom-action-pad-space,
+#custom-action-keys-space,
+#custom-action-hub {
+  min-height: 44px;
+  min-width: 44px;
+  margin: 7px 8px 7px 2px;
+  padding: 0;
+  border-radius: 22px;
+  box-shadow: none;
+}
+#custom-action-pad-space,
+#custom-action-keys-space { color: transparent; background: transparent; }
+#custom-action-hub { color: @ACTION_HUB_TEXT_CSS@; background: @ACTION_HUB_CSS@; }
+
+#workspaces,
+#taskbar { margin: 0; padding: 0; background: transparent; }
+#workspaces button {
+  min-height: 40px;
+  min-width: 30px;
+  margin: 5px 1px;
+  padding: 0 4px;
+  border-radius: 20px;
+  color: @SHELL_MUTED_CSS@;
+  background: transparent;
+  box-shadow: none;
+}
+#workspaces button.focused,
+#workspaces button.active {
+  min-width: 40px;
+  color: @SHELL_SELECTED_TEXT_CSS@;
+  background: @SHELL_ACCENT_CSS@;
+}
+#workspaces button.urgent { color: @SHELL_SELECTED_TEXT_CSS@; background: @SHELL_DANGER_CSS@; }
+
+#taskbar button {
+  min-height: 24px;
+  min-width: 24px;
+  margin: 2px 1px;
+  padding: 0 3px;
+  border-radius: 12px;
+  color: @SHELL_TEXT_CSS@;
+  background: transparent;
+}
+#taskbar button.active { background: @SHELL_ACCENT_SOFT_CSS@; }
+#taskbar button.minimized { color: @SHELL_MUTED_CSS@; background: @SHELL_RAISED_CSS@; }
+#taskbar button.urgent { color: @SHELL_SELECTED_TEXT_CSS@; background: @SHELL_DANGER_CSS@; }
+
+#custom-notifications,
+#custom-sound,
+#network,
+#battery {
+  min-height: 20px;
+  min-width: 18px;
+  margin: 3px 0;
+  padding: 0 2px;
+  color: @SHELL_TEXT_CSS@;
+  background: transparent;
+  font-family: "Symbols Nerd Font", "Noto Sans", sans-serif;
+  font-size: 13px;
+  font-weight: normal;
+}
+#custom-notifications.unread {
+  min-width: 26px;
+  padding: 0 4px;
+  border-radius: 10px;
+  color: @SHELL_SELECTED_TEXT_CSS@;
+  background: @SHELL_WARM_CSS@;
+}
+#custom-notifications.clear { color: @SHELL_MUTED_CSS@; }
+#custom-sound.call,
+#battery.charging { color: @SHELL_ACCENT_CSS@; }
+#battery.critical,
+#network.disconnected,
+#custom-sound.silent { color: @SHELL_DANGER_CSS@; }
+#custom-sound.vibrate { color: @SHELL_WARM_CSS@; }
+#clock { margin-left: 12px; color: @SHELL_TEXT_CSS@; font-size: 14px; font-weight: 600; }
+#custom-settings {
+  min-width: 30px; margin-right: 6px; padding: 0 2px;
+  color: @SHELL_TEXT_CSS@; font-size: 19px; font-weight: 500;
+}
+#battery { margin-right: 14px; }
+
+#custom-steam-running.hidden {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  color: transparent;
+  background: transparent;
+  font-size: 0;
+}
+
+tooltip {
+  color: @SHELL_TEXT_CSS@;
+  background: @SHELL_PANEL_CSS@;
+  border-radius: 14px;
+}

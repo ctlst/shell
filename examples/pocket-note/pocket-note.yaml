@@ -1,0 +1,11 @@
+id: pocket-note
+name: Pocket Note
+kind: exec
+protocol: ctlst-widget-1
+interaction: none
+min_columns: 2
+min_rows: 1
+default_columns: 5
+default_rows: 1
+exec: ctlst-widget-pocket-note
+args: []

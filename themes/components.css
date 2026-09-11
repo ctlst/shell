@@ -1,0 +1,816 @@
+window#ctlstdrawer,
+window#ctlstshade,
+window#ctlstdialer,
+window#ctlstmessages,
+window.number-actions,
+window.new-message,
+window.thread-actions {
+  color: @ctlst_text;
+  background: alpha(@ctlst_bg, 0.94);
+  background-image: none;
+}
+
+window#ctlsthome {
+  color: @ctlst_text;
+  background: transparent;
+  background-image: none;
+}
+
+/* Edit-only clearance above the 56px expanded dock. Home already leaves
+ * 28px at the physical bottom edge; normal grid geometry stays unchanged. */
+window#ctlsthome .home-edit-controls { padding-bottom: 28px; }
+window#ctlsthome .home-launcher-page-bar button {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 22px;
+  box-shadow: none;
+  background-image: none;
+  background: alpha(@ctlst_text, .08);
+  color: @ctlst_text;
+}
+window#ctlsthome .home-launcher-page-bar button:disabled { opacity: .38; }
+
+/* Small visual marks, with a larger transparent remove target. */
+window#ctlsthome button.home-widget-remove {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+  background-image: none;
+  color: #ffffff;
+}
+window#ctlsthome button.home-widget-remove > label {
+  min-width: 22px;
+  min-height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 11px;
+  background: @ctlst_danger;
+  color: #ffffff;
+  font-size: 15px;
+  font-weight: 700;
+  box-shadow: 0 2px 7px alpha(#000000, .25);
+}
+window#ctlsthome button.home-widget-remove:hover > label {
+  background: shade(@ctlst_danger, .85);
+}
+window#ctlsthome .home-widget-handle {
+  min-width: 22px;
+  min-height: 22px;
+  padding: 0;
+  border: 1px solid @ctlst_line;
+  border-radius: 12px;
+  background: @ctlst_panel;
+  color: @ctlst_text;
+  font-size: 15px;
+  font-weight: 500;
+  box-shadow: 0 2px 7px alpha(#000000, .20);
+}
+
+/* Motion surfaces keep their layer geometry fixed. Only the retained child
+ * paints and moves, so the unrevealed area stays transparent. */
+window#ctlstdrawer,
+window#ctlstshade.gsk-motion {
+  background: transparent;
+  background-image: none;
+}
+
+window#ctlstdrawer .drawer-root {
+  background: @ctlst_bg;
+}
+
+window#ctlsthome .home-clock,
+window#ctlsthome .home-date,
+window#ctlsthome .home-system {
+  color: #ffffff;
+  text-shadow: 0 1px 3px alpha(#000000, 0.38);
+}
+window#ctlsthome .home-agent-title,
+window#ctlsthome .home-response { color: @ctlst_text; }
+window#ctlsthome .home-agent-state { color: @ctlst_muted; }
+window#ctlsthome .home-query {
+  color: @ctlst_text;
+  background: alpha(@ctlst_panel, 0.52);
+}
+window#ctlsthome .home-context-tile {
+  color: @ctlst_text;
+  border-color: alpha(@ctlst_line, 0.56);
+}
+window#ctlsthome .home-context-network { background: @ctlst_panel_alt; }
+window#ctlsthome .home-context-battery { background: @ctlst_accent_soft; }
+window#ctlsthome .home-context-performance {
+  background: alpha(@ctlst_panel, 0.92);
+}
+window#ctlsthome .home-context-title { color: @ctlst_muted; }
+window#ctlsthome .home-context-value { color: @ctlst_text; }
+window#ctlsthome .home-activity-value { color: @ctlst_text; }
+window#ctlsthome .home-context-network .home-context-dot {
+  background: @ctlst_accent;
+}
+window#ctlsthome .home-context-battery .home-context-dot {
+  background: @ctlst_warm;
+}
+window#ctlsthome .home-context-performance .home-context-dot {
+  background: @ctlst_accent;
+}
+window#ctlsthome progressbar.home-activity-meter trough {
+  background: alpha(@ctlst_line, 0.42);
+}
+window#ctlsthome progressbar.home-activity-meter progress {
+  background: @ctlst_accent;
+}
+window#ctlsthome progressbar.home-memory-meter progress {
+  background: @ctlst_warm;
+}
+window#ctlsthome .home-agent {
+  color: @ctlst_text;
+  background: alpha(@ctlst_panel, 0.94);
+  border-color: transparent;
+}
+window#ctlsthome .home-quick {
+  color: @ctlst_text;
+  background: alpha(@ctlst_panel, 0.90);
+  border-color: transparent;
+}
+window#ctlsthome entry.home-prompt {
+  color: @ctlst_text;
+  background: @ctlst_bg;
+  border-color: transparent;
+}
+window#ctlsthome button.home-quick-button {
+  color: @ctlst_text;
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+window#ctlsthome .home-quick-icon {
+  color: @ctlst_text;
+  background: @ctlst_raised;
+  border-color: alpha(@ctlst_line, 0.56);
+}
+window#ctlsthome .home-quick-icon-apps,
+window#ctlsthome .home-quick-icon-messages {
+  background: @ctlst_panel_alt;
+}
+window#ctlsthome .home-quick-icon-phone {
+  background: @ctlst_accent_soft;
+}
+window#ctlsthome .home-quick-icon-terminal {
+  background: @ctlst_raised;
+}
+window#ctlsthome .home-quick-icon image { color: @ctlst_text; }
+window#ctlsthome .home-favorites-title,
+window#ctlsthome .home-quick-label {
+  color: @ctlst_text;
+  text-shadow: none;
+}
+window#ctlsthome button.home-suggestion {
+  color: @ctlst_text;
+  background: alpha(@ctlst_panel, 0.50);
+  border-color: transparent;
+}
+window#ctlsthome entry.home-prompt { caret-color: @ctlst_accent; }
+window#ctlsthome button.home-ask {
+  color: @ctlst_selected_text;
+  background: @ctlst_accent;
+}
+window#ctlsthome button.home-action {
+  color: @ctlst_selected_text;
+  background: @ctlst_accent;
+}
+window#ctlsthome button.home-call {
+  color: @ctlst_text;
+  background: @ctlst_accent_soft;
+}
+
+/* Semantic geometry tokens: 8px compact, 12px control, 16px surface. */
+button.header-action,
+button.sheet-action,
+entry.chat-search,
+entry.recipient,
+.app-tile,
+.shade-tile,
+.number-shell,
+.compose-shell,
+.recent-row {
+  border-radius: 12px;
+}
+.bubble,
+.bottom-nav { border-radius: 16px; }
+button.header-action,
+button.sheet-action,
+entry.chat-search,
+entry.recipient,
+button.send,
+button.nav,
+.wifi-row,
+.device-row {
+  min-height: 48px;
+}
+button:disabled {
+  opacity: 0.46;
+  box-shadow: none;
+}
+button:focus-visible,
+entry:focus-visible,
+textview:focus-visible {
+  outline-color: @ctlst_warm;
+  outline-style: solid;
+  outline-width: 2px;
+  outline-offset: -2px;
+}
+button:active { box-shadow: inset 0 -3px @ctlst_warm; }
+window#ctlsthome button,
+window#ctlsthome button:active {
+  border: none;
+  box-shadow: none;
+}
+button.danger,
+button.drawer-close.danger {
+  color: @ctlst_panel;
+  background: @ctlst_danger;
+}
+
+.drawer-grabber { background: @ctlst_accent; }
+.drawer-home-footer { min-height: 24px; }
+.drawer-home-indicator {
+  min-width: 72px;
+  min-height: 6px;
+  border-radius: 3px;
+  background: @ctlst_accent;
+}
+.drawer-title,
+.app-tile label { color: @ctlst_text; }
+.drawer-count { color: @ctlst_muted; }
+.drawer-fps {
+  color: @ctlst_panel;
+  background: @ctlst_accent;
+  border-color: @ctlst_accent;
+}
+entry.drawer-search {
+  color: @ctlst_text;
+  background: @ctlst_panel;
+  border-color: @ctlst_line;
+  caret-color: @ctlst_accent;
+}
+entry.drawer-search:focus { border-color: @ctlst_accent; }
+
+window#ctlstdrawer .app-tile:not(.drawer-edit-row) {
+  min-width: 88px; min-height: 112px; padding: 6px 4px; margin: 0;
+  border-spacing: 4px; background: transparent;
+}
+window#ctlstdrawer .app-tile:not(.drawer-edit-row) .app-icon-disc {
+  min-width: 44px; min-height: 44px; padding: 6px; margin: 0;
+}
+window#ctlstdrawer .app-tile:not(.drawer-edit-row) label {
+  font-size: 12px;
+}
+window#ctlstdrawer .app-tile:not(.drawer-edit-row) label.favorite-badge {
+  font-size: 10px; min-height: 16px; margin: 0; padding: 1px 5px;
+}
+
+window#ctlstdrawer .app-tile.drawer-edit-row {
+  min-height: 48px; padding: 4px 8px; margin: 0; border-radius: 14px; border-spacing: 0;
+  background: @ctlst_panel;
+}
+window#ctlstdrawer .drawer-edit-row .app-icon-disc {
+  min-width: 32px; min-height: 32px; padding: 0; margin: 0; background: transparent;
+}
+window#ctlstdrawer .drawer-edit-row label { font-size: 13px; }
+window#ctlstdrawer .drawer-edit-row button {
+  min-width: 44px; min-height: 44px; padding: 0 6px;
+  font-weight: 500; background: @ctlst_raised; color: @ctlst_text;
+}
+window#ctlstdrawer .drawer-edit-row button:focus-visible {
+  outline: 2px solid @ctlst_accent; outline-offset: -3px;
+}
+window#ctlstdrawer gridview.drawer-edit-list { border-spacing: 0; }
+window#ctlstdrawer button.drawer-close { min-width: 44px; min-height: 44px; padding: 0 10px; }
+button.drawer-close { color: @ctlst_text; background: @ctlst_panel; }
+.app-tile {
+  color: @ctlst_text;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+}
+.app-icon-disc {
+  min-width: 56px;
+  min-height: 56px;
+  padding: 6px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  box-shadow: none;
+}
+.app-tile.favorite .app-icon-disc {
+  background: alpha(@ctlst_warm, 0.10);
+}
+.app-tile label.favorite-badge {
+  min-width: 30px;
+  min-height: 16px;
+  margin: 2px 8px 0;
+  padding: 1px 5px;
+  border-radius: 9px;
+  color: @ctlst_text;
+  background: @ctlst_raised;
+  font-size: 10px;
+  font-weight: 500;
+}
+gridview > child:hover .app-tile,
+gridview > child:focus .app-tile,
+gridview > child:selected .app-tile {
+  color: @ctlst_text;
+  background: transparent;
+  box-shadow: none;
+}
+gridview > child:hover .app-icon-disc,
+gridview > child:focus .app-icon-disc,
+gridview > child:selected .app-icon-disc {
+  background: alpha(@ctlst_accent, 0.13);
+}
+window#ctlsthome .home-launcher-icon-disc {
+  border-radius: 999px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+scrollbar slider {
+  min-width: 8px;
+  min-height: 8px;
+  margin: 0;
+  border-width: 0;
+  background: alpha(@ctlst_accent, 0.65);
+}
+
+window#ctlstdialer .root { background: transparent; }
+window#ctlstdialer .brand,
+window#ctlstdialer .digit,
+window#ctlstdialer .call-number,
+window#ctlstdialer .recent-number { color: @ctlst_text; }
+window#ctlstdialer .eyebrow,
+window#ctlstdialer .recent-kind { color: @ctlst_warm; }
+window#ctlstdialer .call-state,
+window#ctlstdialer .status,
+window#ctlstdialer .letters,
+window#ctlstdialer .recent-meta { color: @ctlst_muted; }
+window#ctlstdialer .number-shell,
+window#ctlstdialer .bottom-nav {
+  color: @ctlst_text;
+  background: @ctlst_panel;
+  border-color: @ctlst_line;
+}
+window#ctlstdialer .recent-row,
+window#ctlstdialer button.recent-main {
+  color: @ctlst_text;
+  background: transparent;
+  border-color: transparent;
+}
+window#ctlstdialer .recent-avatar {
+  color: @ctlst_panel;
+  background: @ctlst_accent;
+}
+window#ctlstdialer button.recent-call,
+window#ctlstdialer button.header-icon {
+  color: @ctlst_text;
+  background: @ctlst_raised;
+  border-color: transparent;
+}
+window#ctlstdialer entry.number {
+  color: @ctlst_text;
+  caret-color: @ctlst_warm;
+}
+window#ctlstdialer button.backspace { color: @ctlst_accent; }
+window#ctlstdialer button.key,
+window#ctlstdialer button.action {
+  color: @ctlst_text;
+  background: @ctlst_raised;
+  border-color: @ctlst_line;
+}
+window#ctlstdialer button.key:hover,
+window#ctlstdialer button.key:active {
+  background: @ctlst_accent_soft;
+  box-shadow: inset 0 -3px @ctlst_warm;
+}
+window#ctlstdialer button.call {
+  color: @ctlst_panel;
+  background: @ctlst_accent;
+}
+window#ctlstdialer button.end {
+  color: @ctlst_panel;
+  background: @ctlst_danger;
+}
+window#ctlstdialer button.nav { color: @ctlst_muted; }
+window#ctlstdialer button.nav.active {
+  color: @ctlst_panel;
+  background: @ctlst_accent;
+  box-shadow: 0 3px 10px alpha(@ctlst_accent, 0.28);
+}
+/* Read-only call information must not depend on the user's action accent. */
+window#ctlstdialer .timer { color: @ctlst_text; }
+window#ctlstdialer button.action.active {
+  color: @ctlst_text;
+  background: @ctlst_accent_soft;
+  box-shadow: inset 0 0 0 1px @ctlst_accent;
+}
+window#ctlstdialer button.more,
+window.number-actions button.sheet-action {
+  color: @ctlst_text;
+  background: @ctlst_raised;
+  border-color: @ctlst_line;
+}
+/* Number details stay in the Phone window; Back is outside the scroller. */
+window#ctlstdialer .action-sheet { padding: 0; }
+window#ctlstdialer .action-sheet .eyebrow {
+  color: @ctlst_muted; font-size: 16px; font-weight: 500; letter-spacing: 0;
+}
+window#ctlstdialer .number-action-content { padding: 8px 2px; }
+window#ctlstdialer .action-number {
+  color: @ctlst_text; font-size: 24px; font-weight: 500; margin: 0 10px 8px;
+}
+window#ctlstdialer .action-contact {
+  color: @ctlst_text; font-size: 20px; font-weight: 600; margin: 0 10px;
+}
+window#ctlstdialer .number-action-group {
+  background: @ctlst_panel; border-radius: 16px; padding: 4px;
+}
+window#ctlstdialer .number-action-group separator {
+  background: @ctlst_line; min-height: 1px; margin: 0 12px;
+}
+window#ctlstdialer .action-sheet button.sheet-action {
+  min-height: 48px; padding: 8px 12px; margin: 0;
+  border: 0; border-radius: 12px; box-shadow: none;
+  background: transparent; color: @ctlst_text; font-size: 16px; font-weight: 400;
+}
+window#ctlstdialer .action-sheet button.sheet-action.primary {
+  color: @ctlst_text; background: @ctlst_accent_soft; font-weight: 600;
+}
+window#ctlstdialer .action-sheet button.sheet-action:hover,
+window#ctlstdialer .action-sheet button.sheet-action:active {
+  background: @ctlst_accent_soft;
+}
+window#ctlstdialer button.number-action-back {
+  min-width: 44px; min-height: 44px; padding: 0 12px;
+  border: 0; border-radius: 12px; box-shadow: none;
+  color: @ctlst_text; background: @ctlst_raised; font-size: 16px; font-weight: 500;
+}
+window.number-actions .eyebrow { color: @ctlst_warm; }
+window.number-actions .action-number { color: @ctlst_text; }
+window.number-actions button.sheet-action.primary {
+  color: @ctlst_panel;
+  background: @ctlst_accent;
+}
+
+window#ctlstmessages .root { background: transparent; }
+window#ctlstmessages .brand,
+window#ctlstmessages .chat-number,
+window#ctlstmessages .thread-number,
+window#ctlstmessages .message-text { color: @ctlst_text; }
+window#ctlstmessages .eyebrow { color: @ctlst_warm; }
+window#ctlstmessages .status,
+window#ctlstmessages .chat-preview,
+window#ctlstmessages .chat-time,
+window#ctlstmessages .message-meta { color: @ctlst_muted; }
+window#ctlstmessages button.header-action,
+window#ctlstmessages button.chat {
+  color: @ctlst_text;
+  background: transparent;
+  border-color: transparent;
+}
+window#ctlstmessages entry.chat-search {
+  color: @ctlst_text;
+  background: @ctlst_panel;
+  border-color: @ctlst_line;
+  caret-color: @ctlst_warm;
+}
+window#ctlstmessages .unread {
+  color: @ctlst_panel;
+  background: @ctlst_warm;
+}
+window#ctlstmessages .bubble.incoming,
+window#ctlstmessages .compose-shell {
+  color: @ctlst_text;
+  background: @ctlst_raised;
+  border-color: @ctlst_line;
+}
+window#ctlstmessages .bubble.outgoing {
+  color: @ctlst_panel;
+  background: @ctlst_accent;
+  border-color: transparent;
+}
+window#ctlstmessages .bubble.outgoing .message-text,
+window#ctlstmessages .bubble.outgoing .message-meta {
+  color: @ctlst_panel;
+}
+window#ctlstmessages button.compose-action {
+  color: @ctlst_text;
+  background: transparent;
+  border-color: transparent;
+}
+window#ctlstmessages entry.compose,
+window.new-message entry.recipient {
+  color: @ctlst_text;
+  background: transparent;
+  caret-color: @ctlst_warm;
+}
+window#ctlstmessages button.send,
+window.new-message button.send {
+  color: @ctlst_panel;
+  background: @ctlst_accent;
+}
+/* New conversation retains its controls across keyboard allocations. */
+window#ctlstmessages .new-message-page { padding: 0; }
+window#ctlstmessages .recipient-title { color: @ctlst_text; font-size: 20px; font-weight: 600; }
+window#ctlstmessages .recipient-label { color: @ctlst_text; font-size: 16px; font-weight: 600; }
+window#ctlstmessages .recipient-help { color: @ctlst_muted; font-size: 14px; }
+window#ctlstmessages .new-message-page entry.recipient {
+  min-width: 0; min-height: 48px; margin: 0; padding: 0 12px;
+  border: 1px solid @ctlst_line; border-radius: 12px;
+  background: @ctlst_bg; color: @ctlst_text; caret-color: @ctlst_text; font-size: 20px;
+}
+window#ctlstmessages button.recipient-cancel,
+window#ctlstmessages button.recipient-continue {
+  min-width: 44px; min-height: 44px; padding: 0 12px;
+  border: 0; border-radius: 12px; box-shadow: none; font-size: 16px; font-weight: 500;
+}
+window#ctlstmessages button.recipient-cancel { color: @ctlst_text; background: @ctlst_raised; }
+window#ctlstmessages button.recipient-continue { color: @ctlst_selected_text; background: @ctlst_accent; }
+window#ctlstmessages button.recipient-continue:disabled { opacity: .45; }
+window.new-message .eyebrow { color: @ctlst_warm; }
+window.new-message .brand { color: @ctlst_text; }
+window.new-message entry.recipient {
+  background: @ctlst_panel;
+  border-color: @ctlst_line;
+}
+window.new-message button.header-action {
+  color: @ctlst_text;
+  background: @ctlst_raised;
+  border-color: @ctlst_line;
+}
+window.thread-actions .eyebrow { color: @ctlst_warm; }
+window.thread-actions .brand { color: @ctlst_text; }
+window.thread-actions button.sheet-action {
+  color: @ctlst_text;
+  background: @ctlst_raised;
+  border-color: @ctlst_line;
+}
+window.thread-actions button.sheet-action.danger {
+  color: @ctlst_panel;
+  background: @ctlst_danger;
+}
+
+/* Mobile hierarchy shared by the native communication companions.
+ * Semantic palette remains user-owned; no glass compositor is required. */
+window#ctlstmessages, window#ctlstdialer {
+  background: @ctlst_bg;
+  border-radius: 0;
+}
+window#ctlstmessages .root, window#ctlstdialer .root {
+  padding: 12px 18px 12px;
+}
+window#ctlstmessages .brand, window#ctlstdialer .brand {
+  font-size: 30px;
+  font-weight: 600;
+}
+window#ctlstmessages button.header-action,
+window#ctlstdialer button.header-icon {
+  background: transparent;
+  color: @ctlst_accent;
+  border-radius: 22px;
+  box-shadow: none;
+}
+window#ctlstmessages button.chat {
+  padding: 14px 4px;
+  margin: 0;
+  border: 0;
+  border-bottom: 1px solid alpha(@ctlst_line, 0.45);
+  border-radius: 0;
+  background: transparent;
+}
+window#ctlstmessages .chat-number { font-size: 16px; font-weight: 600; }
+window#ctlstmessages .chat-preview { font-size: 14px; }
+window#ctlstmessages .chat-time,
+window#ctlstmessages .thread-subtitle,
+window#ctlstmessages .message-meta { font-size: 11px; }
+window#ctlstmessages .thread-header { padding: 0 0 10px; }
+window#ctlstmessages entry.chat-search {
+  background: @ctlst_raised;
+  border: 0;
+  border-radius: 14px;
+  min-height: 44px;
+}
+window#ctlstmessages .thread-avatar {
+  background: @ctlst_accent_soft;
+  color: @ctlst_accent;
+  font-weight: 500;
+}
+window#ctlstmessages .unread {
+  min-width: 22px; min-height: 22px; border-radius: 11px;
+  background: @ctlst_accent; color: @ctlst_selected_text;
+}
+window#ctlstmessages .bubble {
+  padding: 12px 15px; margin: 0; border-radius: 20px; border: 0;
+}
+window#ctlstmessages .message-row { margin: 4px 0 8px; }
+window#ctlstmessages .message-row.incoming { margin-right: 24px; }
+window#ctlstmessages .message-row.outgoing { margin-left: 24px; }
+window#ctlstmessages .message-meta { padding: 0 8px; color: @ctlst_muted; }
+window#ctlstmessages .message-meta.failed { color: @ctlst_text; font-weight: 600; }
+window#ctlstmessages .message-attach { color: @ctlst_text; font-size: 14px; font-weight: 500; }
+window#ctlstmessages .message-text link { color: @ctlst_text; text-decoration-line: underline; }
+window#ctlstmessages .bubble.outgoing .message-text link { color: @ctlst_selected_text; }
+window#ctlstmessages .message-text { font-size: 16px; }
+window#ctlstmessages .bubble.outgoing .message-text,
+window#ctlstmessages .bubble.outgoing .message-attach {
+  color: @ctlst_selected_text;
+}
+window#ctlstmessages .compose-shell {
+  background: @ctlst_panel; border: 0; border-radius: 24px; padding: 5px;
+}
+window#ctlstmessages textview.compose { font-size: 16px; min-height: 40px; }
+window#ctlstmessages menubutton.compose-attachments > button {
+  min-width: 44px; min-height: 44px; padding: 0;
+  border: 0; border-radius: 22px; background: transparent;
+  color: @ctlst_accent; box-shadow: none;
+}
+window#ctlstmessages button.send { color: @ctlst_selected_text; }
+window#ctlstmessages popover > contents {
+  background: @ctlst_panel; color: @ctlst_text; border: 1px solid @ctlst_line;
+  border-radius: 18px; padding: 6px; box-shadow: 0 4px 18px alpha(#000000, 0.16);
+}
+window#ctlstmessages popover arrow {
+  background: @ctlst_panel; border-color: @ctlst_line;
+}
+window#ctlstmessages popover button.sheet-action {
+  background: transparent; border: 0; min-width: 144px; min-height: 44px;
+  font-size: 15px; font-weight: 500; border-radius: 12px;
+}
+window#ctlstmessages popover button.sheet-action:hover,
+window#ctlstmessages popover button.sheet-action:active { background: @ctlst_accent_soft; }
+window#ctlstmessages .outgoing .message-attach { color: @ctlst_selected_text; }
+window#ctlstmessages .conversation-menu-trigger > button {
+  min-width: 44px; min-height: 44px; border: 0; border-radius: 22px;
+  color: @ctlst_accent; background: transparent;
+}
+window#ctlstmessages .conversation-menu-root { padding: 6px; }
+window#ctlstmessages .conversation-menu-title { font-size: 18px; font-weight: 600; }
+window#ctlstmessages .conversation-menu scrollbar,
+window#ctlstmessages .conversation-menu scrollbar trough {
+  background: transparent; border: 0; box-shadow: none;
+}
+window#ctlstmessages .conversation-menu scrollbar slider {
+  background: @ctlst_muted; border: 0; border-radius: 3px;
+  min-width: 5px; min-height: 24px; margin: 2px;
+}
+window#ctlstmessages .conversation-menu button.sheet-action {
+  min-width: 64px; min-height: 44px; padding: 4px 8px; margin: 0;
+}
+window#ctlstmessages .conversation-menu button.destructive-entry { color: @ctlst_danger_label; }
+window#ctlstmessages .conversation-menu button.destructive-confirm {
+  background: @ctlst_danger; color: @ctlst_danger_text;
+}
+window#ctlstmessages .conversation-menu button.destructive-confirm:hover,
+window#ctlstmessages .conversation-menu button.destructive-confirm:active {
+  background: @ctlst_danger_active; color: @ctlst_danger_text;
+}
+window#ctlstmessages .compose-count { font-size: 11px; }
+window#ctlstmessages button:active, window#ctlstdialer button:active {
+  box-shadow: none;
+}
+window#ctlstdialer .number-shell {
+  background: transparent; border: 0; padding: 6px 0;
+}
+window#ctlstdialer entry.number { font-size: 30px; font-weight: 500; }
+window#ctlstdialer button.key {
+  min-width: 64px; min-height: 64px; margin: 2px; padding: 0;
+  border: 0; border-radius: 32px; box-shadow: none;
+}
+window#ctlstdialer button.key:active { box-shadow: none; }
+window#ctlstdialer .digit { font-size: 28px; font-weight: 500; }
+window#ctlstdialer .letters { font-size: 10px; }
+window#ctlstdialer .bottom-nav {
+  background: @ctlst_panel; border: 0; border-radius: 22px; padding: 5px;
+}
+window#ctlstdialer button.nav {
+  font-size: 14px; font-weight: 500; border-radius: 18px; box-shadow: none;
+}
+window#ctlstdialer button.nav.active {
+  background: @ctlst_accent_soft; color: @ctlst_accent; box-shadow: none;
+}
+window#ctlstdialer button.call, window#ctlstdialer button.end {
+  color: @ctlst_selected_text; font-weight: 600; box-shadow: none; padding: 0 12px;
+}
+window#ctlstdialer button.more { padding: 0; }
+window#ctlstdialer button.end { color: @ctlst_danger_text; }
+window#ctlstdialer button.action {
+  min-width: 64px; padding: 8px; border: 0; border-radius: 22px; font-weight: 500;
+}
+window#ctlstdialer .call-controls button.call,
+window#ctlstdialer .call-controls button.end { min-width: 100px; padding: 8px; }
+window#ctlstdialer .recent-row {
+  border-radius: 0; border-bottom: 1px solid alpha(@ctlst_line, 0.45);
+  padding: 10px 2px; margin: 0;
+}
+window#ctlstdialer button.recent-main {
+  min-width: 0; min-height: 44px; padding: 4px 0; border: 0;
+  border-radius: 10px; background: transparent; background-image: none; box-shadow: none;
+}
+window#ctlstdialer button.recent-main:hover,
+window#ctlstdialer button.recent-call:hover { background: @ctlst_accent_soft; }
+window#ctlstdialer .recent-row .recent-number { font-size: 16px; font-weight: 600; }
+window#ctlstdialer .recent-kind { color: @ctlst_muted; font-size: 14px; font-weight: 400; }
+window#ctlstdialer .missed-call .recent-kind { color: @ctlst_text; font-weight: 600; }
+window#ctlstdialer .recent-meta { font-size: 12px; }
+window#ctlstdialer .action-history { color: @ctlst_muted; font-size: 14px; margin: 0 10px; }
+window#ctlstdialer .recent-avatar {
+  color: @ctlst_text; background: @ctlst_accent_soft; font-weight: 500;
+}
+window#ctlstdialer button.recent-call {
+  min-width: 44px; min-height: 44px; padding: 6px; border: 0; border-radius: 14px;
+  background: @ctlst_raised; color: @ctlst_text; font-size: 12px; font-weight: 500;
+  background-image: none; box-shadow: none;
+}
+
+/* Quick settings: distinct controls, explicit detail routes, quiet grouping. */
+window#ctlstshade .shade-root {
+  background: @ctlst_bg; padding: 8px 20px 16px;
+}
+window#ctlstshade .shade-title { font-size: 28px; font-weight: 600; }
+window#ctlstshade .shade-header { margin-bottom: 10px; }
+window#ctlstshade .shade-settings-box {
+  background: transparent; padding: 0; border: 0; box-shadow: none;
+}
+window#ctlstshade .shade-control-group {
+  background: @ctlst_panel; border-radius: 22px;
+}
+window#ctlstshade .shade-primary > * { min-width: 120px; margin: 4px; }
+window#ctlstshade .shade-utilities > * { min-width: 120px; margin: 4px; }
+window#ctlstshade .shade-control-tile {
+  min-height: 76px; border-radius: 22px;
+  background: @ctlst_panel; box-shadow: none;
+}
+window#ctlstshade .shade-control-tile.active {
+  background: @ctlst_accent; color: @ctlst_selected_text;
+}
+window#ctlstshade .shade-control-tile.active .shade-control-icon {
+  color: @ctlst_selected_text;
+}
+window#ctlstshade .shade-control-label { font-size: 13px; font-weight: 500; }
+window#ctlstshade .shade-control-detail {
+  min-width: 44px; padding: 0; border: 0; border-radius: 0 22px 22px 0;
+  background: transparent; color: @ctlst_accent; box-shadow: none;
+}
+window#ctlstshade .shade-toggle-row {
+  min-height: 56px; padding: 4px 12px; background: @ctlst_panel; border-radius: 18px;
+}
+window#ctlstshade .shade-toggle-title { font-size: 15px; font-weight: 500; }
+window#ctlstshade .shade-toggle-state { font-size: 12px; }
+window#ctlstshade .shade-mini-control {
+  min-height: 48px; background: @ctlst_panel; border-radius: 16px; padding: 4px;
+}
+window#ctlstshade .shade-mini-control .shade-control-label { font-size: 11px; }
+window#ctlstshade .shade-mini-control.active {
+  background: @ctlst_accent_soft; color: @ctlst_accent;
+}
+window#ctlstshade .shade-status-grid .shade-card {
+  background: @ctlst_panel; padding: 12px; box-shadow: none;
+}
+window#ctlstshade .shade-status-grid .shade-network { font-size: 14px; font-weight: 500; }
+window#ctlstshade .shade-status-grid .shade-detail { font-size: 12px; }
+window#ctlstshade .shade-slider { min-height: 44px; }
+window#ctlstshade .shade-slider trough { min-height: 14px; border-radius: 7px; }
+window#ctlstshade .shade-slider highlight { border-radius: 7px; margin: 0; }
+window#ctlstshade .shade-notification-title { font-size: 20px; font-weight: 600; }
+window#ctlstshade .notification-row { background: @ctlst_panel; border-radius: 20px; padding: 14px; }
+window#ctlstshade .notification-app { font-size: 12px; font-weight: 500; color: @ctlst_muted; }
+window#ctlstshade .notification-summary { font-size: 16px; font-weight: 600; }
+window#ctlstshade .notification-body { font-size: 14px; }
+window#ctlstshade .shade-action, window#ctlstshade .shade-chip {
+  font-size: 13px; font-weight: 500; box-shadow: none;
+}
+window#ctlstshade .shade-subtitle { font-size: 14px; }
+window#ctlstshade .wifi-row, window#ctlstshade .device-row {
+  background: @ctlst_panel; border-radius: 18px; padding: 12px;
+}
+window#ctlstshade button:active { box-shadow: none; }
+window#ctlstshade .shade-primary > flowboxchild { padding: 0; }
+window#ctlstshade button.shade-header-close { min-width: 44px; font-size: 24px; padding: 0; }
+window#ctlstshade .shade-slider trough,
+window#ctlstshade .shade-slider slider,
+window#ctlstshade .shade-slider highlight { border: 0; box-shadow: none; }
+window#ctlstshade .shade-toggle-row switch {
+  min-width: 52px; min-height: 26px; padding: 3px; border: 0;
+  border-radius: 999px; background: @ctlst_raised; background-image: none;
+  box-shadow: inset 0 0 0 1px alpha(@ctlst_muted, 0.4);
+}
+window#ctlstshade .shade-toggle-row switch slider {
+  min-width: 26px; min-height: 26px; margin: 0; padding: 0; border: 0;
+  border-radius: 999px; background: @ctlst_muted; background-image: none; box-shadow: none;
+}
+window#ctlstshade .shade-toggle-row switch:checked { background: @ctlst_accent; }
+window#ctlstshade .shade-toggle-row switch:checked slider { background: @ctlst_selected_text; }

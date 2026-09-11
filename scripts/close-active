@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+
+if "${CTLST_LIBEXEC_DIR:-/usr/libexec/ctlst-shell}/ctlstdrawer" close; then
+    exit 0
+fi
+
+# Layer-shell launchers are not part of Sway's normal window tree.
+if pgrep -x fuzzel >/dev/null 2>&1; then
+    pkill -x fuzzel
+    exit 0
+fi
+
+swaymsg kill

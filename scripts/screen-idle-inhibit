@@ -1,0 +1,94 @@
+#!/bin/sh
+set -eu
+
+runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+config_file="${CTLST_KEEP_AWAKE_APPS:-${CTLST_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/ctlst}/keep-awake-apps.conf}"
+pid_file="$runtime_dir/sway-touch-screen-idle-inhibit.pid"
+screen_idle="${CTLST_LIBEXEC_DIR:-/usr/libexec/ctlst-shell}/screen-idle"
+
+focused_identity() {
+    swaymsg -r -t get_tree 2>/dev/null | jq -r '
+        [.. | objects | select(.focused? == true and .pid? != null)]
+        | last
+        | [(.app_id // ""), (.window_properties.class // "")]
+        | @tsv
+    ' 2>/dev/null || true
+}
+
+matches_rule() {
+    app_id=$1
+    class=$2
+    [ -r "$config_file" ] || return 1
+
+    while IFS= read -r raw || [ -n "$raw" ]; do
+        rule="$(printf '%s\n' "$raw" |
+            sed 's/[[:space:]]*#.*$//; s/^[[:space:]]*//; s/[[:space:]]*$//')"
+        [ -n "$rule" ] || continue
+        case "$rule" in
+            app_id=*) [ "$app_id" = "${rule#app_id=}" ] && return 0 ;;
+            class=*) [ "$class" = "${rule#class=}" ] && return 0 ;;
+            *)
+                { [ "$app_id" = "$rule" ] || [ "$class" = "$rule" ]; } &&
+                    return 0
+                ;;
+        esac
+    done <"$config_file"
+    return 1
+}
+
+update_inhibitor() {
+    identity="$(focused_identity)"
+    tab="$(printf '\t')"
+    app_id=${identity%%"$tab"*}
+    if [ "$identity" = "$app_id" ]; then
+        class=
+    else
+        class=${identity#*"$tab"}
+    fi
+
+    if matches_rule "$app_id" "$class"; then
+        reason=${app_id:-$class}
+        current="$(sed -n '1p' "$runtime_dir/sway-touch-screen-idle.inhibited" \
+            2>/dev/null || true)"
+        [ "$current" = "$reason" ] || "$screen_idle" inhibit on "$reason"
+    elif [ -e "$runtime_dir/sway-touch-screen-idle.inhibited" ]; then
+        "$screen_idle" inhibit off
+    fi
+}
+
+stop_existing() {
+    if [ -s "$pid_file" ]; then
+        old_pid="$(cat "$pid_file")"
+        [ "$old_pid" = "$$" ] || kill "$old_pid" 2>/dev/null || true
+    fi
+}
+
+cleanup() {
+    rm -f "$pid_file"
+    "$screen_idle" inhibit off >/dev/null 2>&1 || true
+}
+
+case "${1:-daemon}" in
+    daemon)
+        stop_existing
+        printf '%s\n' "$$" >"$pid_file"
+        trap cleanup EXIT INT TERM
+        while :; do
+            update_inhibitor
+            swaymsg -m -t subscribe '["window","workspace","shutdown"]' |
+                while IFS= read -r event; do
+                    update_inhibitor
+                    printf '%s' "$event" | jq -e '.change == "exit"' \
+                        >/dev/null 2>&1 && break
+                done
+            sleep 0.25
+        done
+        ;;
+    refresh)
+        update_inhibitor
+        ;;
+    *)
+        printf 'usage: screen-idle-inhibit {daemon|refresh}\n' >&2
+        exit 2
+        ;;
+esac

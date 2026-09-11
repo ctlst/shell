@@ -1,0 +1,23 @@
+.build/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+/bin/
+
+# Native build outputs are release artifacts, not source.
+/ctlst-gestured/ctlst-gestured
+/ctlstaction/ctlstaction
+/ctlstdialer/ctlstdialer
+/ctlstdock/ctlstdock
+/ctlsthome/ctlsthome
+/ctlstlock/ctlstlock
+/ctlstmessages/ctlstmessages
+/ctlstoverview/ctlstoverview
+/ctlstpad/ctlstpad
+/ctlstshade/ctlstshade
+
+# Clean-room VM state must live outside the checkout, but ignore accidental
+# local artifacts as a final guard.
+/vm-state/
+*.qcow2
+*.img

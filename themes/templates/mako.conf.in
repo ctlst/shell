@@ -1,0 +1,34 @@
+font=Noto Sans 10
+background-color=@SHELL_PANEL_HEX@
+text-color=@SHELL_TEXT_HEX@
+border-color=@SHELL_LINE_HEX@
+border-size=0
+border-radius=24
+width=420
+height=132
+margin=10
+padding=16
+default-timeout=5000
+max-visible=3
+anchor=top-right
+layer=overlay
+on-notify=exec $CTLST_LIBEXEC_DIR/notification-history capture "$id"
+
+[category=x-ctlst.incoming-call]
+default-timeout=0
+ignore-timeout=1
+background-color=@SHELL_ACCENT_SOFT_HEX@
+text-color=@SHELL_TEXT_HEX@
+format=<b>%s</b>\n%b\nTap to answer
+on-touch=invoke-action answer
+on-button-left=invoke-action answer
+on-button-right=invoke-action decline
+
+[category=x-ctlst.active-call]
+default-timeout=0
+ignore-timeout=1
+background-color=@SHELL_PANEL_ALT_HEX@
+text-color=@SHELL_TEXT_HEX@
+format=<b>%s</b>\n%b
+on-touch=invoke-action default
+on-button-left=invoke-action default

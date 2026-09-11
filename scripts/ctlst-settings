@@ -1,0 +1,1408 @@
+#!/usr/bin/env python3
+"""Touch-first GTK4 settings for the Sway Touch shell."""
+
+import json
+import os
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+# Match the accelerated shell path; retain explicit diagnostic/VM overrides.
+os.environ.setdefault("GSK_RENDERER", "gl")
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Gdk", "4.0")
+gi.require_version("GdkPixbuf", "2.0")
+from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango
+
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+WALLPAPER = SCRIPT_DIR / "ctlst-wallpaper"
+MEMORY = SCRIPT_DIR / "ctlst-memory-status"
+RESTART_SWAY = SCRIPT_DIR / "restart-sway"
+SHADE = SCRIPT_DIR / "ctlstshade"
+THEME = SCRIPT_DIR / "ctlst-theme"
+SCREEN_IDLE = SCRIPT_DIR / "screen-idle"
+SOUND = SCRIPT_DIR / "sound-profile"
+AUTO_ROTATE = SCRIPT_DIR / "auto-rotate"
+
+
+def call_json(command):
+    try:
+        result = subprocess.run(command, check=False, text=True, capture_output=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise RuntimeError(str(error)) from error
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip() or "Command failed")
+    return json.loads(result.stdout)
+
+
+def output_lines(command):
+    if "/" in str(command[0]) and not Path(command[0]).is_file():
+        return []
+    try:
+        result = subprocess.run(command, check=False, text=True, capture_output=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise RuntimeError(str(error)) from error
+    return [line for line in result.stdout.splitlines() if line] if not result.returncode else []
+
+
+class Settings(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id="dev.ctlst.Settings")
+        self.status_text = ""
+        self.status_label = None
+        self.wallpapers = []
+        self.wallpaper_ids = []
+        self.build_generation = 0
+        self.activation_started = 0.0
+        self.jobs = {}
+        self.display_refresh_pending = False
+        self.display_notice = ""
+        self.theme_refresh_pending = False
+        self.theme_notice = ""
+        self.theme_draft = None
+        self.wallpaper_draft = None
+        self.wallpaper_mode = None
+        self.wallpaper_notice = ""
+        self.wallpaper_refresh_pending = False
+        self.wallpaper_preview_serial = 0
+        self.wallpaper_preview_pending = False
+        self.wallpaper_file_open = False
+        self.memory_refresh_pending = False
+        self.memory_notice = ""
+        self.debug = os.environ.get("CTLST_SETTINGS_DEBUG", "").lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+
+    def trace(self, label):
+        diagnostic = os.environ.get("CTLST_SETTINGS_DEBUG_LOG")
+        if diagnostic:
+            with open(diagnostic, "a", encoding="utf-8") as stream:
+                stream.write(label + "\n")
+        if self.debug:
+            elapsed = (time.monotonic() - self.activation_started) * 1000
+            print(f"ctlst-settings: {label} at {elapsed:.0f}ms", file=sys.stderr)
+
+    def background(self, key, work, finished):
+        """Helpers and owned image decoding run off-thread; GTK stays on its loop."""
+        if key in self.jobs:
+            return False
+        token = object()
+        self.jobs[key] = token
+        window, generation = self.props.active_window, self.build_generation
+        self.hold()
+
+        def complete(value, error):
+            try:
+                if self.jobs.get(key) is token:
+                    del self.jobs[key]
+                if self.props.active_window is window and generation == self.build_generation:
+                    finished(value, error)
+                if key == "display" and self.display_refresh_pending and self.props.active_window:
+                    self.display_refresh_pending = False
+                    self.refresh_display()
+                if key == "appearance" and self.theme_refresh_pending and self.props.active_window:
+                    self.theme_refresh_pending = False
+                    self.refresh_themes()
+                if key == "wallpaper" and self.wallpaper_refresh_pending and self.props.active_window:
+                    self.wallpaper_refresh_pending = False
+                    self.refresh_wallpapers()
+                if key == "wallpaper-preview" and self.wallpaper_preview_pending and self.props.active_window:
+                    self.wallpaper_preview_pending = False
+                    self.update_wallpaper_preview()
+                if key == "memory" and self.memory_refresh_pending and self.props.active_window:
+                    self.memory_refresh_pending = False
+                    self.refresh_memory()
+            finally:
+                self.release()
+            return GLib.SOURCE_REMOVE
+
+        def run():
+            try:
+                value, error = work(), None
+            except Exception as failure:
+                value, error = None, str(failure)
+            GLib.idle_add(complete, value, error)
+
+        try:
+            threading.Thread(target=run, name="ctlst-settings-" + key, daemon=True).start()
+        except RuntimeError as error:
+            complete(None, str(error))
+        return True
+
+    def do_startup(self):
+        Gtk.Application.do_startup(self)
+        self.theme_provider = Gtk.CssProvider()
+        self.theme_path = Path(os.environ.get("CTLST_GENERATED_DIR", Path.home() / ".config/ctlst")) / "theme.css"
+        try:
+            self.theme_provider.load_from_path(str(self.theme_path))
+            Gtk.StyleContext.add_provider_for_display(
+                Gdk.Display.get_default(), self.theme_provider, Gtk.STYLE_PROVIDER_PRIORITY_USER
+            )
+            self.theme_monitor = Gio.File.new_for_path(str(self.theme_path.parent)).monitor_directory(Gio.FileMonitorFlags.NONE, None)
+            self.theme_monitor.connect("changed", self.theme_changed)
+            self.update_gtk_color_scheme()
+        except Exception:
+            pass
+        provider = Gtk.CssProvider()
+        provider.load_from_data(
+            b"""
+            window#ctlstsettings {
+              background: @ctlst_bg;
+              color: @ctlst_text;
+              font-family: "Noto Sans";
+            }
+            window#ctlstsettings label { color: @ctlst_text; }
+            tooltip { background: @ctlst_panel; color: @ctlst_text; border: 1px solid @ctlst_line; }
+            tooltip label, window#ctlstsettings tooltip label { color: @ctlst_text; }
+            .settings-root { margin: 8px 20px 16px; }
+            .settings-hero {
+              margin: 0 0 8px;
+              padding: 0;
+              border: 0;
+              background: transparent;
+            }
+            .settings-eyebrow {
+              color: @ctlst_accent;
+              font-size: 10px;
+              font-weight: 800;
+              letter-spacing: 0.9px;
+            }
+            .settings-title { font-size: 30px; font-weight: 600; margin: 0; }
+            .settings-toolbar-title { font-size: 18px; font-weight: 600; }
+            .settings-memory-value { font-size: 26px; font-weight: 600; }
+            .settings-memory-usage trough { background: @ctlst_raised; border: 0; box-shadow: none; border-radius: 8px; min-height: 6px; }
+            .settings-memory-usage progress { background: @ctlst_accent; border: 0; box-shadow: none; border-radius: 8px; min-height: 6px; min-width: 0; margin: 0; }
+            .settings-subtitle, .settings-detail { color: @ctlst_muted; }
+            .settings-status {
+              margin-top: 5px;
+              color: @ctlst_accent;
+              font-size: 11px;
+              font-weight: 700;
+            }
+            .settings-section { margin-top: 12px; }
+            .settings-card {
+              background: @ctlst_panel;
+              border: 0;
+              border-radius: 22px;
+              padding: 6px;
+            }
+            .wallpaper-preview {
+              min-height: 156px;
+              background: @ctlst_raised;
+              border: 0;
+              border-radius: 15px;
+            }
+            .wallpaper-file-choice {
+              color: @ctlst_accent;
+              background: alpha(@ctlst_accent_soft, 0.74);
+            }
+            .wallpaper-file-choice label { color: @ctlst_accent; }
+            button, dropdown { min-height: 48px; border-radius: 14px; }
+            button {
+              color: @ctlst_text;
+              background: transparent;
+              border: 0;
+              box-shadow: none;
+              font-weight: 500;
+            }
+            button:hover, button:active { background: alpha(@ctlst_accent_soft, 0.72); }
+            button:active { background: @ctlst_accent_soft; }
+            button.primary {
+              color: @ctlst_panel;
+              background: @ctlst_accent;
+              box-shadow: 0 4px 12px alpha(@ctlst_accent, 0.22);
+            }
+            window#ctlstsettings button.primary label { color: @ctlst_selected_text; }
+            button.primary:active { background: @ctlst_accent; }
+            button.settings-close {
+              min-height: 44px;
+              padding: 0 12px;
+              color: @ctlst_accent;
+              background: alpha(@ctlst_accent_soft, 0.74);
+            }
+            dropdown {
+              color: @ctlst_text;
+              background: transparent;
+              border: 0;
+              padding: 0;
+              box-shadow: none;
+            }
+            dropdown > button {
+              color: @ctlst_text;
+              background: @ctlst_raised;
+              background-image: none;
+              padding: 0 12px;
+              border-radius: 14px;
+            }
+            dropdown > button label, dropdown > button image {
+              color: @ctlst_text;
+            }
+            popover, popover.menu { background: transparent; }
+            popover > contents,
+            popover.menu > contents,
+            popover listview,
+            popover viewport {
+              color: @ctlst_text;
+              background: @ctlst_panel;
+            }
+            popover row {
+              color: @ctlst_text;
+              background: @ctlst_panel;
+              border-radius: 10px;
+              padding: 10px 12px;
+            }
+            popover row label { color: @ctlst_text; }
+            popover row:hover, popover row:active {
+              background: @ctlst_accent_soft;
+            }
+            popover row:selected { background: @ctlst_accent; }
+            window#ctlstsettings popover row:selected label { color: @ctlst_selected_text; }
+            window#ctlstsettings popover row:selected image { color: @ctlst_selected_text; }
+            window#ctlstsettings switch {
+              min-width: 52px;
+              min-height: 26px;
+              padding: 3px;
+              border: 0;
+              border-radius: 999px;
+              background: @ctlst_raised;
+              background-image: none;
+              box-shadow: inset 0 0 0 1px alpha(@ctlst_muted, 0.40);
+            }
+            window#ctlstsettings switch slider {
+              min-width: 26px;
+              min-height: 26px;
+              margin: 0;
+              padding: 0;
+              border: 0;
+              border-radius: 999px;
+              background: @ctlst_muted;
+              background-image: none;
+              box-shadow: none;
+            }
+            window#ctlstsettings switch:checked {
+              background: @ctlst_accent;
+              box-shadow: none;
+            }
+            window#ctlstsettings switch:checked slider {
+              background: @ctlst_selected_text;
+            }
+            window#ctlstsettings switch:focus-visible {
+              outline: 2px solid @ctlst_warm;
+              outline-offset: 3px;
+            }
+            window#ctlstsettings switch:disabled { opacity: 0.46; }
+            .settings-section-title {
+              color: @ctlst_muted;
+              margin: 0 4px 2px;
+              font-size: 11px;
+              font-weight: 600;
+              letter-spacing: 0.2px;
+            }
+            .settings-card > label {
+              margin: 7px 10px 1px;
+              color: @ctlst_muted;
+            }
+            .settings-row { min-height: 48px; padding: 0 10px; }
+            .settings-row + .settings-row {
+              border-top: 1px solid alpha(@ctlst_line, 0.48);
+            }
+            button.settings-category { padding: 13px 12px; border-radius: 0; }
+            button.settings-category + button.settings-category {
+              border-top: 1px solid alpha(@ctlst_line, 0.45);
+            }
+            .settings-category-title { font-size: 16px; font-weight: 500; }
+            window#ctlstsettings .settings-category-detail {
+              color: @ctlst_muted; font-size: 12px; font-weight: 400;
+            }
+            window#ctlstsettings .settings-category-icon {
+              color: @ctlst_accent;
+              background: @ctlst_accent_soft;
+              border-radius: 10px;
+              padding: 6px;
+            }
+            window#ctlstsettings .settings-category-chevron { color: @ctlst_muted; }
+            button.settings-back { color: @ctlst_accent; padding: 0; min-width: 44px; min-height: 44px; }
+            button:focus-visible { outline: 2px solid @ctlst_accent; outline-offset: -2px; }
+            .settings-detail-page { margin-bottom: 16px; }
+            """
+        )
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
+
+    def do_activate(self):
+        window = self.props.active_window
+        if window:
+            window.present()
+            return
+        self.activation_started = time.monotonic()
+        window = Gtk.ApplicationWindow(application=self, title="Settings")
+        window.set_name("ctlstsettings")
+        window.set_decorated(False)
+        window.set_default_size(480, 820)
+        keys = Gtk.EventControllerKey()
+        keys.connect("key-pressed", self.navigation_key)
+        window.add_controller(keys)
+        self.build_window(window)
+        window.present()
+        self.trace("window presented")
+
+    def build_window(self, window):
+        previous_page = getattr(self, "current_page", "index")
+        self.build_generation += 1
+        self.page_builders = {
+            "appearance": ("Appearance", self.appearance_section),
+            "wallpaper": ("Wallpaper", self.wallpaper_section),
+            "connections": ("Connections", self.connections_section),
+            "display": ("Display & sound", self.display_sound_section),
+            "memory": ("Shell memory", self.memory_section),
+        }
+        self.built_pages = set()
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        root.add_css_class("settings-root")
+        hero = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+        hero.add_css_class("settings-hero")
+        hero_top = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.back_button = Gtk.Button.new_from_icon_name("go-previous-symbolic")
+        self.back_button.update_property([Gtk.AccessibleProperty.LABEL], ["Back to Settings"])
+        self.back_button.set_tooltip_text("Back to Settings")
+        self.back_button.add_css_class("settings-back")
+        self.back_button.connect("clicked", lambda _button: self.show_page("index"))
+        hero_top.append(self.back_button)
+        self.toolbar_title = Gtk.Label(xalign=0.5, wrap=True, hexpand=True)
+        self.toolbar_title.add_css_class("settings-toolbar-title")
+        hero_top.append(self.toolbar_title)
+        self.page_title = Gtk.Label(label="Settings", xalign=0, wrap=True, hexpand=True)
+        self.page_title.add_css_class("settings-title")
+        hero_top.append(self.page_title)
+        close = Gtk.Button(label="Close")
+        close.add_css_class("settings-close")
+        close.connect("clicked", lambda _button: window.close())
+        hero_top.append(close)
+        hero.append(hero_top)
+        self.status_label = Gtk.Label(label=self.status_text, xalign=0, wrap=True)
+        self.status_label.add_css_class("settings-status")
+        self.status_label.set_visible(bool(self.status_text))
+        hero.append(self.status_label)
+        root.append(hero)
+        self.page_stack = Gtk.Stack(vexpand=True)
+        self.page_stack.set_hhomogeneous(False)
+        self.page_stack.set_vhomogeneous(False)
+        self.page_stack.set_transition_type(Gtk.StackTransitionType.SLIDE_LEFT_RIGHT)
+        self.page_stack.set_transition_duration(180)
+        self.pending_category_focus = None
+        self.page_stack.connect("notify::transition-running", self.restore_category_focus)
+        self.page_stack.add_named(self.build_index(), "index")
+        root.append(self.page_stack)
+        self.page_footer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.page_footer.add_css_class("settings-page-actions")
+        root.append(self.page_footer)
+        window.set_child(root)
+        self.show_page(previous_page)
+        self.trace("settings index ready")
+
+    def build_index(self):
+        self.category_buttons = {}
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        groups = (
+            ("Personalize", (
+                ("appearance", "preferences-desktop-appearance-symbolic", "Colors and shell theme"),
+                ("wallpaper", "preferences-desktop-wallpaper-symbolic", "Your background, your way"),
+            )),
+            ("Device", (
+                ("connections", "network-wireless-symbolic", "Wi-Fi and Bluetooth"),
+                ("display", "display-brightness-symbolic", "Rotation, screen timeout and sound"),
+            )),
+            ("Advanced", (
+                ("memory", "applications-system-symbolic", "Memory status and session tools"),
+            )),
+        )
+        for heading, rows in groups:
+            section, card = self.section(heading)
+            for page, icon_name, description in rows:
+                button = Gtk.Button()
+                button.add_css_class("settings-category")
+                row = Gtk.Box(spacing=12)
+                icon = Gtk.Image.new_from_icon_name(icon_name)
+                icon.set_pixel_size(22)
+                icon.set_valign(Gtk.Align.CENTER)
+                icon.add_css_class("settings-category-icon")
+                row.append(icon)
+                text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3, hexpand=True)
+                title = Gtk.Label(label=self.page_builders[page][0], xalign=0, wrap=True)
+                title.add_css_class("settings-category-title")
+                detail = Gtk.Label(label=description, xalign=0, wrap=True)
+                detail.add_css_class("settings-category-detail")
+                text.append(title)
+                text.append(detail)
+                row.append(text)
+                chevron = Gtk.Image.new_from_icon_name("go-next-symbolic")
+                chevron.set_pixel_size(16)
+                chevron.set_valign(Gtk.Align.CENTER)
+                chevron.add_css_class("settings-category-chevron")
+                row.append(chevron)
+                button.set_child(row)
+                button.update_property([Gtk.AccessibleProperty.LABEL], [self.page_builders[page][0]])
+                button.connect("clicked", lambda _button, name: self.show_page(name), page)
+                self.category_buttons[page] = button
+                card.append(button)
+            content.append(section)
+        scroll = Gtk.ScrolledWindow(vexpand=True)
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_kinetic_scrolling(True)
+        scroll.set_child(content)
+        return scroll
+
+    def show_page(self, name):
+        previous = getattr(self, "current_page", "index")
+        if name != "index" and name not in self.page_builders:
+            name = "index"
+        self.current_page = name
+        notices = {"display": self.display_notice, "appearance": self.theme_notice, "wallpaper": self.wallpaper_notice, "memory": self.memory_notice}
+        if previous in notices or name in notices:
+            self.message(notices.get(name, ""))
+        self.back_button.set_visible(name != "index")
+        self.page_footer.set_visible(name == "wallpaper")
+        self.page_title.set_visible(name == "index")
+        self.toolbar_title.set_visible(name != "index")
+        self.toolbar_title.set_text("" if name == "index" else self.page_builders[name][0])
+        if name != "index" and name not in self.built_pages:
+            self.built_pages.add(name)
+            scroll = Gtk.ScrolledWindow(vexpand=True)
+            scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+            scroll.set_kinetic_scrolling(True)
+            scroll.set_child(Gtk.Label(label="Loading…"))
+            self.page_stack.add_named(scroll, name)
+            GLib.idle_add(self.populate_page, name, scroll, self.build_generation)
+        if name == "index" and previous in self.category_buttons:
+            self.pending_category_focus = previous
+        else:
+            self.pending_category_focus = None
+        self.page_stack.set_visible_child_name(name)
+        if name == "index":
+            GLib.idle_add(self.restore_category_focus)
+        else:
+            self.back_button.grab_focus()
+
+    def restore_category_focus(self, *_args):
+        name = self.pending_category_focus
+        if not name or self.current_page != "index" or self.page_stack.get_transition_running():
+            return GLib.SOURCE_REMOVE
+        button = self.category_buttons[name]
+        if not button.get_mapped():
+            return GLib.SOURCE_REMOVE
+        self.pending_category_focus = None
+        button.grab_focus()
+        scroll = self.page_stack.get_child_by_name("index")
+        content = scroll.get_child().get_child()
+        valid, bounds = button.compute_bounds(content)
+        if valid:
+            adjustment = scroll.get_vadjustment()
+            top, bottom = bounds.origin.y, bounds.origin.y + bounds.size.height
+            visible_top = adjustment.get_value()
+            visible_height = adjustment.get_page_size()
+            if top < visible_top:
+                adjustment.set_value(top)
+            elif bottom > visible_top + visible_height:
+                adjustment.set_value(bottom - visible_height)
+        return GLib.SOURCE_REMOVE
+
+    def populate_page(self, name, scroll, generation):
+        if generation != self.build_generation:
+            return GLib.SOURCE_REMOVE
+        try:
+            content = self.page_builders[name][1]()
+            # The navigation header already owns the title on a detail page.
+            content.get_first_child().set_visible(False)
+            content.add_css_class("settings-detail-page")
+            scroll.set_child(content)
+            self.trace(name + " page ready")
+        except (OSError, RuntimeError, ValueError) as error:
+            scroll.set_child(Gtk.Label(label=str(error), wrap=True, xalign=0))
+            self.message(str(error))
+        return GLib.SOURCE_REMOVE
+
+    def navigation_key(self, _controller, keyval, _keycode, modifiers):
+        back = keyval in (Gdk.KEY_Escape, Gdk.KEY_Back) or (
+            keyval == Gdk.KEY_Left and modifiers & Gdk.ModifierType.ALT_MASK
+        )
+        if back and self.current_page != "index":
+            self.show_page("index")
+            self.back_button.set_visible(False)
+            return True
+        if keyval == Gdk.KEY_Escape:
+            self.props.active_window.close()
+            return True
+        return False
+
+    def section(self, title):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.add_css_class("settings-section")
+        heading = Gtk.Label(label=title, xalign=0)
+        heading.add_css_class("settings-section-title")
+        box.append(heading)
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        card.add_css_class("settings-card")
+        box.append(card)
+        return box, card
+
+    def choice(self, labels, accessible_name):
+        """Bound the closed selector; keep full names readable in its popup."""
+        chooser = Gtk.DropDown.new_from_strings(labels)
+        chooser.update_property([Gtk.AccessibleProperty.LABEL], [accessible_name])
+        for popup in (False, True):
+            factory = Gtk.SignalListItemFactory()
+
+            def setup(_factory, item, expanded=popup):
+                label = Gtk.Label(xalign=0, hexpand=True)
+                label.set_max_width_chars(24)
+                if expanded:
+                    label.set_wrap(True)
+                    label.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+                else:
+                    label.set_ellipsize(Pango.EllipsizeMode.END)
+                item.set_child(label)
+
+            def bind(_factory, item):
+                item.get_child().set_text(item.get_item().get_string())
+
+            factory.connect("setup", setup)
+            factory.connect("bind", bind)
+            if popup:
+                chooser.set_list_factory(factory)
+            else:
+                chooser.set_factory(factory)
+        return chooser
+
+    def appearance_section(self):
+        section, card = self.section("Appearance")
+        row = Gtk.Box(spacing=12)
+        row.add_css_class("settings-row")
+        row.append(Gtk.Label(label="Shell theme", xalign=0, hexpand=True, wrap=True))
+        self.theme_names = []
+        self.theme_syncing = False
+        self.theme_chooser = self.choice(["Choose a theme"], "Shell theme selector")
+        self.theme_chooser.connect("notify::selected", self.theme_choice_changed)
+        row.append(self.theme_chooser)
+        card.append(row)
+        self.theme_current = Gtk.Label(label="Current theme: Loading…", xalign=0, wrap=True)
+        self.theme_current.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        self.theme_current.add_css_class("settings-detail")
+        card.append(self.theme_current)
+        self.theme_status = Gtk.Label(label="Loading themes…", xalign=0, wrap=True)
+        self.theme_status.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        self.theme_status.add_css_class("settings-detail")
+        card.append(self.theme_status)
+        self.theme_apply = Gtk.Button(label="Apply theme")
+        self.theme_apply.add_css_class("primary")
+        self.theme_apply.connect("clicked", lambda _button: self.apply_theme(self.theme_draft))
+        card.append(self.theme_apply)
+        self.theme_refresh = Gtk.Button(label="Refresh themes")
+        self.theme_refresh.connect("clicked", lambda _button: self.refresh_themes())
+        card.append(self.theme_refresh)
+        self.refresh_themes()
+        return section
+
+    @staticmethod
+    def read_themes():
+        errors = []
+        try:
+            themes = output_lines([str(THEME), "list"])
+            if any(not name.strip() or any(ord(char) < 32 for char in name) for name in themes):
+                raise ValueError("Invalid theme catalog")
+            themes = list(dict.fromkeys(themes))
+            if not themes:
+                errors.append("No themes are available from the theme helper.")
+        except (OSError, RuntimeError, ValueError):
+            themes = []
+            errors.append("The theme catalog could not be read.")
+        try:
+            current = output_lines([str(THEME), "current"])
+            if len(current) != 1 or not current[0].strip() or any(ord(char) < 32 for char in current[0]):
+                raise ValueError("Invalid current theme")
+            current = current[0]
+        except (OSError, RuntimeError, ValueError):
+            current = None
+            errors.append("The current theme could not be read.")
+        return themes, current, errors
+
+    def theme_feedback(self, notice, detail):
+        self.theme_notice = notice
+        self.theme_status.set_text(detail)
+        if self.current_page == "appearance":
+            self.message(notice)
+
+    def themes_pending(self, applying=False):
+        self.theme_chooser.set_sensitive(False)
+        self.theme_apply.set_sensitive(False)
+        self.theme_refresh.set_sensitive(False)
+        self.theme_feedback("Applying theme…" if applying else "Loading themes…",
+            "Applying the selected theme. You can still go Back or Close." if applying else "Reading the theme catalog and current selection…")
+
+    def theme_choice_changed(self, widget, _property):
+        if self.theme_syncing or "appearance" in self.jobs:
+            return
+        selected = widget.get_selected()
+        self.theme_draft = self.theme_names[selected - 1] if 0 < selected <= len(self.theme_names) else None
+        self.theme_apply.set_sensitive(self.theme_draft is not None)
+        self.theme_feedback("Theme ready to apply" if self.theme_draft else "",
+            "Choose Apply theme to save this selection and reload the shell." if self.theme_draft else "Choose a theme to continue.")
+
+    def themes_loaded(self, report, error=None, request=None):
+        themes, current, errors = report if report is not None else ([], None, [error or "Theme status unavailable."])
+        self.theme_names = themes
+        # Retain a user's unapplied selection across refresh, errors and rebuild.
+        if self.theme_draft is None and current in themes:
+            self.theme_draft = current
+        self.theme_syncing = True
+        try:
+            self.theme_chooser.set_model(Gtk.StringList.new(["Choose a theme", *themes]))
+            self.theme_chooser.set_selected(themes.index(self.theme_draft) + 1 if self.theme_draft in themes else 0)
+        finally:
+            self.theme_syncing = False
+        self.theme_chooser.set_sensitive(bool(themes))
+        self.theme_apply.set_sensitive(self.theme_draft in themes)
+        self.theme_refresh.set_sensitive(True)
+        self.theme_current.set_text("Current theme: " + (current if current is not None else "Unavailable"))
+        notice = ""
+        detail = "Choose a theme, then Apply theme to save it and reload the shell."
+        if request:
+            wanted, failure = request
+            if current == wanted and not failure:
+                notice = "Theme selection saved"
+                detail = "Your theme selection is saved."
+            elif current == wanted:
+                notice = "Check theme application"
+                detail = "Your theme is saved, but the shell could not finish updating. Some apps may still use the previous colors."
+            else:
+                notice = "Theme change not confirmed"
+                detail = "The saved selection does not confirm this change. Check the current theme before trying again."
+            if failure:
+                detail += " " + failure[:200]
+        if errors:
+            notice = notice or "Theme status unavailable"
+            detail += " " + " ".join(errors) + " Refresh themes to check again."
+        self.theme_feedback(notice, detail)
+
+    def refresh_themes(self):
+        self.themes_pending()
+        if "appearance" in self.jobs:
+            self.theme_refresh_pending = True
+            return
+        self.background("appearance", self.read_themes, self.themes_loaded)
+
+    def apply_theme(self, theme):
+        if "appearance" in self.jobs or theme not in self.theme_names:
+            return
+        if "wallpaper" in self.jobs:
+            self.theme_feedback("Wallpaper is busy", "Wait for the wallpaper operation to finish, then Apply theme.")
+            return
+        self.theme_draft = theme
+        self.themes_pending(applying=True)
+
+        def work():
+            failure = None
+            try:
+                result = subprocess.run([str(THEME), "apply", theme], capture_output=True, text=True, timeout=30)
+                if result.returncode:
+                    failure = result.stderr.strip() or "The theme helper failed."
+            except (OSError, subprocess.TimeoutExpired) as error:
+                failure = str(error)
+            return self.read_themes(), failure
+
+        def finished(result, error):
+            report, failure = result if result is not None else (None, error)
+            self.themes_loaded(report, error, (theme, failure))
+
+        self.background("appearance", work, finished)
+
+    def theme_changed(self, _monitor, file, _other, _event):
+        if file.get_basename() in ("theme.css", "theme.json") and self.theme_path.is_file():
+            try:
+                self.theme_provider.load_from_path(str(self.theme_path))
+                self.update_gtk_color_scheme()
+            except GLib.Error as error:
+                self.message(str(error))
+
+    def update_gtk_color_scheme(self):
+        try:
+            theme = json.loads(self.theme_path.with_name("theme.json").read_text())
+            Gtk.Settings.get_default().set_property("gtk-application-prefer-dark-theme", theme["mode"] == "dark")
+        except (OSError, ValueError, KeyError):
+            pass
+
+    def wallpaper_section(self):
+        section, card = self.section("Wallpaper")
+        self.wallpaper_syncing = False
+        self.wallpapers = []
+        self.wallpaper_ids = []
+        self.wallpaper_choices = [None]
+        self.wallpaper_picker = self.choice(["Choose a wallpaper"], "Wallpaper selector")
+        self.wallpaper_picker.connect("notify::selected", self.wallpaper_choice_changed)
+        self.wallpaper_preview_host = Gtk.Stack()
+        self.wallpaper_preview_host.set_hhomogeneous(False)
+        self.wallpaper_preview_host.set_vhomogeneous(False)
+        self.wallpaper_preview_host.add_css_class("wallpaper-preview")
+        self.wallpaper_preview_host.set_overflow(Gtk.Overflow.HIDDEN)
+        self.wallpaper_preview = Gtk.Picture()
+        self.wallpaper_preview.set_can_shrink(True)
+        self.wallpaper_preview.set_size_request(-1, 156)
+        self.wallpaper_preview_host.add_named(self.wallpaper_preview, "image")
+        self.wallpaper_preview_label = Gtk.Label(label="Choose an image to preview", wrap=True)
+        self.wallpaper_preview_label.set_size_request(-1, 156)
+        self.wallpaper_preview_host.add_named(self.wallpaper_preview_label, "status")
+        self.wallpaper_preview_host.set_visible_child_name("status")
+        card.append(self.wallpaper_preview_host)
+        self.wallpaper_current = Gtk.Label(label="Current wallpaper: Loading…", xalign=0, wrap=True)
+        self.wallpaper_current.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        self.wallpaper_current.add_css_class("settings-detail")
+        card.append(self.wallpaper_current)
+        card.append(self.wallpaper_picker)
+        choose_file = Gtk.Button(label="Choose from files")
+        choose_file.add_css_class("wallpaper-file-choice")
+        choose_file.connect("clicked", self.choose_wallpaper_file)
+        self.wallpaper_file_button = choose_file
+        card.append(choose_file)
+        detail = Gtk.Label(label="Preview your choice, then Apply. Images from files are copied into your wallpaper collection only when applied.",
+                           xalign=0, wrap=True)
+        detail.add_css_class("settings-detail")
+        card.append(detail)
+        self.mode_picker = self.choice(["Crop to fill", "Fit entire image", "Center at original size"], "Wallpaper fit")
+        self.mode_picker.connect("notify::selected", self.wallpaper_mode_changed)
+        card.append(self.mode_picker)
+        self.wallpaper_status = Gtk.Label(label="Loading wallpapers…", xalign=0, wrap=True)
+        self.wallpaper_status.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        self.wallpaper_status.add_css_class("settings-detail")
+        card.append(self.wallpaper_status)
+        self.wallpaper_apply_button = Gtk.Button(label="Apply wallpaper")
+        self.wallpaper_apply_button.add_css_class("primary")
+        self.wallpaper_apply_button.connect("clicked", self.apply_wallpaper)
+        self.page_footer.append(self.wallpaper_apply_button)
+        self.wallpaper_refresh_button = Gtk.Button(label="Refresh wallpapers")
+        self.wallpaper_refresh_button.connect("clicked", lambda _button: self.refresh_wallpapers())
+        card.append(self.wallpaper_refresh_button)
+        self.refresh_wallpapers()
+        return section
+
+    @staticmethod
+    def read_wallpapers():
+        errors = []
+        try:
+            entries = call_json([str(WALLPAPER), "list"])
+            if not isinstance(entries, list) or any(
+                not isinstance(item, dict) or any(not isinstance(item.get(key), str) or not item[key]
+                    for key in ("id", "name", "path", "source")) for item in entries
+            ) or len({item["id"] for item in entries}) != len(entries):
+                raise ValueError("Invalid wallpaper catalog")
+        except (OSError, RuntimeError, ValueError, TypeError):
+            entries = []
+            errors.append("The wallpaper collection could not be read.")
+        try:
+            state = call_json([str(WALLPAPER), "current"])
+            if state is not None and (not isinstance(state, dict) or
+                not isinstance(state.get("id"), str) or not state["id"] or
+                state.get("mode") not in ("fill", "fit", "center")):
+                raise ValueError("Invalid current wallpaper")
+        except (OSError, RuntimeError, ValueError, TypeError):
+            state = None
+            errors.append("The current wallpaper could not be read.")
+        return entries, state, errors
+
+    def wallpaper_feedback(self, notice, detail):
+        self.wallpaper_notice = notice
+        self.wallpaper_status.set_text(detail)
+        if self.current_page == "wallpaper":
+            self.message(notice)
+
+    def wallpaper_update_controls(self, busy=False):
+        self.wallpaper_picker.set_sensitive(not busy and len(self.wallpaper_choices) > 1)
+        self.mode_picker.set_sensitive(not busy)
+        self.wallpaper_apply_button.set_sensitive(not busy and not self.wallpaper_file_open and self.wallpaper_draft is not None)
+        self.wallpaper_file_button.set_sensitive(not busy and not self.wallpaper_file_open)
+        self.wallpaper_refresh_button.set_sensitive(not busy)
+
+    def wallpaper_pending(self, applying=False):
+        self.wallpaper_update_controls(busy=True)
+        self.wallpaper_feedback("Applying wallpaper…" if applying else "Loading wallpapers…",
+            "Saving your choice and updating the background…" if applying else "Reading your wallpaper collection…")
+
+    def wallpaper_choice_changed(self, widget, _property):
+        if self.wallpaper_syncing or "wallpaper" in self.jobs:
+            return
+        selected = widget.get_selected()
+        self.wallpaper_draft = self.wallpaper_choices[selected] if selected < len(self.wallpaper_choices) else None
+        self.wallpaper_update_controls()
+        self.wallpaper_feedback("Wallpaper ready to apply" if self.wallpaper_draft else "",
+            "Image preview only. Final placement follows your screen size. Choose Apply to change the background.")
+        self.update_wallpaper_preview()
+
+    def wallpaper_mode_changed(self, widget, _property):
+        if self.wallpaper_syncing or "wallpaper" in self.jobs:
+            return
+        selected = widget.get_selected()
+        if selected < 3:
+            self.wallpaper_mode = ("fill", "fit", "center")[selected]
+            self.wallpaper_preview.set_content_fit(Gtk.ContentFit.COVER if self.wallpaper_mode == "fill" else Gtk.ContentFit.CONTAIN)
+            self.wallpaper_feedback("Wallpaper ready to apply" if self.wallpaper_draft else "",
+                "Image preview only. Final placement follows your screen size. Choose Apply to change the background.")
+
+    def wallpaper_loaded(self, report, error=None, request=None):
+        entries, state, errors = report if report is not None else ([], None, [error or "Wallpaper status unavailable."])
+        self.wallpapers = entries
+        self.wallpaper_ids = [item["id"] for item in entries]
+        if self.wallpaper_draft is None and state:
+            self.wallpaper_draft = next((item for item in entries if item["id"] == state["id"]), None)
+        if self.wallpaper_mode is None:
+            self.wallpaper_mode = state["mode"] if state else "fill"
+        self.wallpaper_choices = [None, *entries]
+        if self.wallpaper_draft is not None:
+            matching = next((item for item in entries if item["id"] == self.wallpaper_draft["id"]), None)
+            if matching:
+                self.wallpaper_draft = matching
+            else:
+                self.wallpaper_choices.append(self.wallpaper_draft)
+        labels = ["Choose a wallpaper", *[
+            item["name"] + (" · From files" if item["source"] == "file" else
+                           " · On device" if item["source"] == "managed" else " · System")
+            for item in self.wallpaper_choices[1:]]]
+        self.wallpaper_syncing = True
+        try:
+            self.wallpaper_picker.set_model(Gtk.StringList.new(labels))
+            self.wallpaper_picker.set_selected(self.wallpaper_choices.index(self.wallpaper_draft) if self.wallpaper_draft else 0)
+            self.mode_picker.set_selected(("fill", "fit", "center").index(self.wallpaper_mode))
+        finally:
+            self.wallpaper_syncing = False
+        current_name = next((item["name"] for item in entries if state and item["id"] == state["id"]),
+                            state["id"] if state else "No managed selection" if not errors else "Unavailable")
+        self.wallpaper_current.set_text("Current wallpaper: " + current_name)
+        self.wallpaper_update_controls()
+        notice, detail = "", "Choose an image and placement, then Apply wallpaper."
+        if request:
+            wanted, mode, failure = request
+            matches = state is not None and wanted is not None and state["id"] == wanted and state["mode"] == mode
+            if matches and not failure:
+                notice, detail = "Wallpaper saved", "Your wallpaper selection is saved."
+            elif matches:
+                notice, detail = "Check wallpaper application", "The requested wallpaper is selected, but the background update reported an error."
+            else:
+                notice, detail = "Wallpaper change not confirmed", "Check the current wallpaper before trying again. Your pending choice is still here."
+            if failure:
+                detail += " " + failure[:200]
+        if errors:
+            notice = notice or "Wallpaper status unavailable"
+            detail += " " + " ".join(errors) + " Refresh wallpapers to check again."
+        self.wallpaper_feedback(notice, detail)
+        self.update_wallpaper_preview()
+
+    def refresh_wallpapers(self):
+        self.wallpaper_pending()
+        if "wallpaper" in self.jobs:
+            self.wallpaper_refresh_pending = True
+            return
+        self.background("wallpaper", self.read_wallpapers, self.wallpaper_loaded)
+
+    @staticmethod
+    def load_wallpaper_preview(path):
+        if not Path(path).is_file():
+            raise RuntimeError("Image is not a regular file")
+        # Keep the retained thumbnail small; decoding is isolated from GTK's loop.
+        return GdkPixbuf.Pixbuf.new_from_file_at_scale(path, 640, 640, True)
+
+    def update_wallpaper_preview(self):
+        self.wallpaper_preview_serial += 1
+        serial = self.wallpaper_preview_serial
+        self.wallpaper_preview.set_paintable(None)
+        self.wallpaper_preview_host.set_visible_child_name("status")
+        self.wallpaper_preview_label.set_text("Loading preview…" if self.wallpaper_draft else "Choose an image to preview")
+        if "wallpaper-preview" in self.jobs:
+            self.wallpaper_preview_pending = True
+            return
+        if self.wallpaper_draft is None:
+            return
+        path = self.wallpaper_draft["path"]
+        self.wallpaper_preview.set_content_fit(Gtk.ContentFit.COVER if self.wallpaper_mode == "fill" else Gtk.ContentFit.CONTAIN)
+
+        def finished(pixbuf, error):
+            if serial != self.wallpaper_preview_serial:
+                return
+            if error or pixbuf is None:
+                self.wallpaper_preview_label.set_text("Preview unavailable. You can choose another image.")
+                return
+            self.wallpaper_preview.set_paintable(Gdk.Texture.new_for_pixbuf(pixbuf))
+            self.wallpaper_preview_host.set_visible_child_name("image")
+
+        self.background("wallpaper-preview", lambda: self.load_wallpaper_preview(path), finished)
+
+    def stage_wallpaper_file(self, path):
+        self.wallpaper_draft = {"id": None, "name": Path(path).name, "path": path, "source": "file"}
+        # Rebuild only the choice model, without rereading or applying anything.
+        self.wallpaper_choices = [None, *self.wallpapers, self.wallpaper_draft]
+        self.wallpaper_syncing = True
+        try:
+            self.wallpaper_picker.set_model(Gtk.StringList.new(["Choose a wallpaper",
+                *[item["name"] for item in self.wallpapers], Path(path).name + " · From files"]))
+            self.wallpaper_picker.set_selected(len(self.wallpaper_choices) - 1)
+        finally:
+            self.wallpaper_syncing = False
+        self.wallpaper_choice_changed(self.wallpaper_picker, None)
+
+    def apply_wallpaper(self, _button):
+        if "wallpaper" in self.jobs or self.wallpaper_file_open or self.wallpaper_draft is None:
+            return
+        if "appearance" in self.jobs:
+            self.wallpaper_feedback("Appearance is busy", "Wait for the theme operation to finish, then Apply wallpaper.")
+            return
+        draft, mode = dict(self.wallpaper_draft), self.wallpaper_mode
+        if mode not in ("fill", "fit", "center"):
+            return
+        self.wallpaper_pending(applying=True)
+
+        def work():
+            wanted, failure = draft["id"], None
+            command = [str(WALLPAPER), "import", draft["path"], mode] if draft["source"] == "file" else [str(WALLPAPER), "set", wanted, mode]
+            try:
+                result = call_json(command)
+                if not isinstance(result, dict) or not isinstance(result.get("id"), str) or not result["id"] or result.get("mode") != mode:
+                    raise ValueError("Invalid wallpaper response")
+                if draft["source"] != "file" and result["id"] != wanted:
+                    raise ValueError("The wallpaper response did not match the request")
+                wanted = result["id"]
+            except (OSError, RuntimeError, ValueError, TypeError) as error:
+                failure = str(error)
+            return self.read_wallpapers(), wanted, failure
+
+        def finished(result, error):
+            report, wanted, failure = result if result is not None else (None, draft["id"], error)
+            if report and not failure and draft["source"] == "file" and self.wallpaper_draft == draft:
+                entries, state, _errors = report
+                if state and state["id"] == wanted and state["mode"] == mode:
+                    self.wallpaper_draft = next((item for item in entries if item["id"] == wanted), self.wallpaper_draft)
+            self.wallpaper_loaded(report, error, (wanted, mode, failure))
+
+        self.background("wallpaper", work, finished)
+
+    def finish_wallpaper_file_choice(self, context, path=None, error=None):
+        self.wallpaper_file_open = False
+        if self.props.active_window and hasattr(self, "wallpaper_file_button"):
+            self.wallpaper_update_controls(busy="wallpaper" in self.jobs)
+        if context != (self.props.active_window, self.build_generation):
+            return
+        if error:
+            self.wallpaper_feedback("Image selection failed", error)
+        elif path:
+            self.stage_wallpaper_file(path)
+
+    def choose_wallpaper_file(self, _button):
+        if self.wallpaper_file_open or "wallpaper" in self.jobs:
+            return
+        self.wallpaper_file_open = True
+        self.wallpaper_update_controls()
+        context = (self.props.active_window, self.build_generation)
+        dialog = Gtk.FileChooserDialog(title="Choose wallpaper", transient_for=self.props.active_window,
+                                       modal=True, action=Gtk.FileChooserAction.OPEN)
+        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Open", Gtk.ResponseType.ACCEPT)
+        image_filter = Gtk.FileFilter()
+        image_filter.set_name("Images")
+        image_filter.add_mime_type("image/*")
+        dialog.add_filter(image_filter)
+        dialog.connect("response", self.wallpaper_file_finished, context)
+        dialog.present()
+
+    def wallpaper_file_finished(self, dialog, response, context):
+        selected = dialog.get_file() if response == Gtk.ResponseType.ACCEPT else None
+        path = selected.get_path() if selected else None
+        dialog.destroy()
+        if response != Gtk.ResponseType.ACCEPT:
+            self.finish_wallpaper_file_choice(context)
+            return
+        if not path:
+            self.finish_wallpaper_file_choice(context, error="The selected file is not available locally")
+            return
+        self.finish_wallpaper_file_choice(context, path=path)
+
+    def connections_section(self):
+        section, card = self.section("Connections")
+        for label, panel in (("Wi-Fi settings", "wifi"), ("Bluetooth settings", "bluetooth")):
+            button = Gtk.Button(label=label)
+            button.connect("clicked", lambda _button, value: self.open_shade(value), panel)
+            card.append(button)
+        return section
+
+    def display_sound_section(self):
+        section, card = self.section("Display and sound")
+        self.display_controls = {}
+        self.display_placeholders = {}
+        self.display_syncing = False
+
+        timeout_row = Gtk.Box(spacing=12)
+        timeout_row.add_css_class("settings-row")
+        timeout_row.append(Gtk.Label(label="Turn screen off", xalign=0, hexpand=True, wrap=True))
+        timeout_values = (0, 60, 120, 300, 600, 1800)
+        timeout_labels = ("Never", "1 minute", "2 minutes", "5 minutes", "10 minutes", "30 minutes")
+        timeout_picker = self.choice(timeout_labels, "Screen timeout")
+        timeout_picker.connect(
+            "notify::selected",
+            lambda widget, _: self.display_choice_changed("timeout", widget, timeout_values),
+        )
+        timeout_row.append(self.display_control("timeout", timeout_picker))
+        card.append(timeout_row)
+        self.display_controls["timeout"] = (timeout_picker, timeout_values)
+
+        sound_row = Gtk.Box(spacing=12)
+        sound_row.add_css_class("settings-row")
+        sound_row.append(Gtk.Label(label="Sound profile", xalign=0, hexpand=True, wrap=True))
+        profiles = ("sound", "vibrate", "silent")
+        profile_labels = ("Sound", "Vibrate", "Silent")
+        profile_picker = self.choice(profile_labels, "Sound profile")
+        profile_picker.connect(
+            "notify::selected",
+            lambda widget, _: self.display_choice_changed("sound", widget, profiles),
+        )
+        sound_row.append(self.display_control("sound", profile_picker))
+        card.append(sound_row)
+        self.display_controls["sound"] = (profile_picker, profiles)
+
+        rotation_row = Gtk.Box(spacing=12)
+        rotation_row.add_css_class("settings-row")
+        rotation_row.append(
+            Gtk.Label(label="Rotation lock", xalign=0, hexpand=True, wrap=True)
+        )
+        rotation_lock = Gtk.Switch()
+        rotation_lock.set_valign(Gtk.Align.CENTER)
+        rotation_lock.update_property([Gtk.AccessibleProperty.LABEL], ["Rotation lock"])
+        rotation_lock.connect(
+            "notify::active",
+            lambda widget, _: self.set_rotation_lock(widget.get_active()),
+        )
+        rotation_row.append(self.display_control("rotation", rotation_lock))
+        card.append(rotation_row)
+        self.display_controls["rotation"] = (rotation_lock, None)
+
+        self.display_status = Gtk.Label(label="Loading device settings…", xalign=0, wrap=True)
+        self.display_status.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        self.display_status.add_css_class("settings-detail")
+        card.append(self.display_status)
+        self.display_refresh = Gtk.Button(label="Refresh device settings")
+        self.display_refresh.connect("clicked", lambda _button: self.refresh_display())
+        card.append(self.display_refresh)
+
+        controls = Gtk.Button(label="Quick controls")
+        controls.connect("clicked", lambda _button: self.open_shade("show"))
+        card.append(controls)
+        self.refresh_display()
+        return section
+
+    def set_screen_timeout(self, seconds):
+        self.change_display("timeout", seconds, [str(SCREEN_IDLE), "set", str(seconds)])
+
+    def display_control(self, key, widget):
+        host = Gtk.Stack()
+        host.set_hhomogeneous(False)
+        host.set_vhomogeneous(False)
+        unknown = Gtk.Label(label="Loading…", wrap=True)
+        unknown.add_css_class("settings-detail")
+        host.add_named(widget, "value")
+        host.add_named(unknown, "unknown")
+        host.set_visible_child_name("unknown")
+        self.display_placeholders[key] = (host, unknown)
+        return host
+
+    def display_choice_changed(self, key, widget, choices):
+        selected = widget.get_selected()
+        if self.display_syncing or selected >= len(choices):
+            return
+        if key == "timeout":
+            self.set_screen_timeout(choices[selected])
+        else:
+            self.set_sound_profile(choices[selected])
+
+    def set_sound_profile(self, profile):
+        self.change_display("sound", profile, [str(SOUND), profile])
+
+    def set_rotation_lock(self, locked):
+        self.change_display("rotation", locked, [str(AUTO_ROTATE), "lock" if locked else "unlock"])
+
+    @staticmethod
+    def read_display():
+        values, errors = {}, {}
+        timers = {"Screen timeout off": 0, "Screen 1 min": 60, "Screen 2 min": 120,
+                  "Screen 5 min": 300, "Screen 10 min": 600, "Screen 30 min": 1800}
+        for key in ("timeout", "sound", "rotation"):
+            try:
+                if key == "timeout":
+                    lines = output_lines([str(SCREEN_IDLE), "status"])
+                    value = timers[lines[0]]
+                elif key == "sound":
+                    value = call_json([str(SOUND), "status"])["class"]
+                    if value not in ("sound", "vibrate", "silent"):
+                        raise ValueError("Unknown sound profile")
+                else:
+                    lines = output_lines([str(AUTO_ROTATE), "status"])
+                    if not lines or lines[0] not in ("locked", "unlocked"):
+                        raise ValueError("Unknown rotation state")
+                    value = lines[0] == "locked"
+                values[key] = value
+            except (OSError, RuntimeError, ValueError, KeyError, IndexError, TypeError) as error:
+                errors[key] = str(error) or "Status unavailable"
+        return values, errors
+
+    def display_pending(self, text):
+        self.display_notice = "Applying device setting…" if text.startswith("Applying") else "Loading device settings…"
+        if self.current_page == "display":
+            self.message(self.display_notice)
+        for widget, _values in self.display_controls.values():
+            widget.set_sensitive(False)
+        for host, unknown in self.display_placeholders.values():
+            if host.get_visible_child_name() == "unknown":
+                unknown.set_text("Loading…")
+        self.display_refresh.set_sensitive(False)
+        self.display_status.set_text(text)
+
+    def display_loaded(self, report, error=None, request=None):
+        values, errors = report if report is not None else ({}, {"all": error or "Status unavailable"})
+        self.display_syncing = True
+        try:
+            for key, (widget, choices) in self.display_controls.items():
+                known = key in values
+                if known:
+                    if choices is None:
+                        widget.set_active(values[key])
+                    else:
+                        widget.set_selected(choices.index(values[key]))
+                host, unknown = self.display_placeholders[key]
+                unknown.set_text("Unavailable")
+                host.set_visible_child_name("value" if known else "unknown")
+                widget.set_sensitive(known)
+        finally:
+            self.display_syncing = False
+        self.display_refresh.set_sensitive(True)
+        notices = []
+        if request is not None:
+            key, wanted, write_error = request
+            if key in values and values[key] == wanted:
+                notices.append("Setting verified." if not write_error else
+                               "Requested setting is now active, but the helper reported an error.")
+            else:
+                notices.append("Change not confirmed. The controls show the latest readable state; check before retrying.")
+            if write_error:
+                notices.append(write_error[:200])
+        if errors:
+            names = {"timeout": "Screen timeout", "sound": "Sound profile", "rotation": "Rotation lock", "all": "Device settings"}
+            notices.append("Unavailable: " + ", ".join(names[key] for key in errors) + ". Refresh to check again.")
+        self.display_status.set_text(" ".join(notices))
+        self.display_notice = "Device state unavailable." if errors else ""
+        if request is not None:
+            self.display_notice = "Setting verified." if request[0] in values and values[request[0]] == request[1] and not request[2] else "Check device setting status below."
+        if self.current_page == "display":
+            self.message(self.display_notice)
+
+    def refresh_display(self):
+        self.display_pending("Loading device settings…")
+        if "display" in self.jobs:
+            self.display_refresh_pending = True
+            return
+        self.background("display", self.read_display, self.display_loaded)
+
+    def change_display(self, key, wanted, command):
+        if self.display_syncing or "display" in self.jobs:
+            return
+        self.display_pending("Applying change… Navigation remains available.")
+
+        def work():
+            failure = None
+            try:
+                result = subprocess.run(command, check=False, text=True, capture_output=True, timeout=10)
+                if result.returncode:
+                    failure = result.stderr.strip() or "Command failed"
+            except (OSError, subprocess.TimeoutExpired) as error:
+                failure = str(error)
+            # A failed/expired command may still have changed persistent state.
+            # Read back instead of inventing a rollback or retrying automatically.
+            return self.read_display(), failure
+
+        def finished(result, error):
+            report, failure = result if result is not None else (None, error)
+            self.display_loaded(report, error, (key, wanted, failure))
+
+        self.background("display", work, finished)
+
+    def open_shade(self, panel):
+        try:
+            subprocess.Popen([str(SHADE), panel])
+        except OSError as error:
+            self.message(str(error))
+
+    def memory_section(self):
+        section, card = self.section("Memory")
+        self.memory_label = Gtk.Label(xalign=0, wrap=True)
+        self.memory_label.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        self.memory_label.add_css_class("settings-memory-value")
+        card.append(self.memory_label)
+        self.memory_usage = Gtk.ProgressBar()
+        self.memory_usage.add_css_class("settings-memory-usage")
+        self.memory_usage.update_property([Gtk.AccessibleProperty.LABEL], ["Estimated memory in use"])
+        self.memory_usage.set_visible(False)
+        card.append(self.memory_usage)
+        self.memory_usage_note = Gtk.Label(xalign=0, wrap=True)
+        self.memory_usage_note.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        self.memory_usage_note.add_css_class("settings-detail")
+        card.append(self.memory_usage_note)
+        self.memory_values = {}
+        for key, title in (("total", "Total RAM"), ("swap", "Swap in use"),
+                           ("sway_pss", "Sway proportional memory"), ("sway_rss", "Sway resident memory")):
+            row = Gtk.Box(spacing=12)
+            row.add_css_class("settings-row")
+            row.append(Gtk.Label(label=title, xalign=0, hexpand=True, wrap=True))
+            value = Gtk.Label(label="Loading…", xalign=1)
+            value.set_width_chars(12)
+            value.set_max_width_chars(14)
+            value.set_ellipsize(Pango.EllipsizeMode.END)
+            row.append(value)
+            self.memory_values[key] = value
+            card.append(row)
+        note = Gtk.Label(label="Available RAM includes reclaimable memory. Proportional memory divides shared pages between processes; resident memory includes shared pages in full.",
+                         xalign=0, wrap=True)
+        note.add_css_class("settings-detail")
+        card.append(note)
+        self.memory_advice = Gtk.Label(xalign=0, wrap=True)
+        self.memory_advice.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        self.memory_advice.add_css_class("settings-detail")
+        card.append(self.memory_advice)
+        self.memory_refresh_button = Gtk.Button(label="Refresh memory status")
+        self.memory_refresh_button.connect("clicked", lambda _button: self.refresh_memory())
+        card.append(self.memory_refresh_button)
+        tools_section, tools_card = self.section("Session tools")
+        section.append(tools_section)
+        restart = Gtk.Button(label="Reload shell configuration")
+        restart.connect("clicked", self.restart_sway)
+        tools_card.append(restart)
+        tools_card.append(Gtk.Label(label="Reloads your dotfiles and styling. This does not restart the compositor or clear app memory.", xalign=0, wrap=True))
+        self.memory_session_button = restart
+        self.refresh_memory()
+        return section
+
+    @staticmethod
+    def memory_amount(value):
+        return "Unavailable" if value is None else f"{value / 1048576:,.0f} MiB"
+
+    @staticmethod
+    def read_memory():
+        report = call_json([str(MEMORY)])
+        if not isinstance(report, dict) or not isinstance(report.get("restart_recommended"), bool):
+            raise ValueError("Invalid memory status response")
+        errors = []
+        def amount(value, label):
+            if value is None:
+                return None
+            if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 2**64 - 1:
+                errors.append(label + " is unavailable.")
+                return None
+            return value
+        sway = report.get("sway", {})
+        if not isinstance(sway, dict):
+            sway = {}
+            errors.append("Sway memory is unavailable.")
+        values = {
+            "available": amount(report.get("mem_available_bytes"), "Available RAM"),
+            "total": amount(report.get("mem_total_bytes"), "Total RAM"),
+            "swap": amount(report.get("swap_used_bytes"), "Swap use"),
+            "sway_pss": amount(sway.get("pss_bytes"), "Sway proportional memory"),
+            "sway_rss": amount(sway.get("rss_bytes"), "Sway resident memory"),
+        }
+        if values["available"] is not None and values["total"] is not None and values["available"] > values["total"]:
+            values["available"] = None
+            errors.append("The reported available RAM exceeds total RAM.")
+        reasons = report.get("restart_reasons", [])
+        if not isinstance(reasons, list) or any(not isinstance(reason, str) for reason in reasons):
+            raise ValueError("Invalid memory warning response")
+        thresholds = report.get("thresholds_bytes", {})
+        if not isinstance(thresholds, dict):
+            thresholds = {}
+        warnings = []
+        descriptions = {
+            "low_mem_available": ("Available RAM is low", "mem_available_min_bytes"),
+            "high_sway_rss": ("Sway resident memory is high (including shared pages)", "sway_rss_max_bytes"),
+            "high_sway_swap": ("Sway swap use is high", "sway_swap_max_bytes"),
+            "high_swap_used": ("Total swap use is high", "swap_used_max_bytes"),
+        }
+        if report["restart_recommended"]:
+            for reason in dict.fromkeys(reasons):
+                description, key = descriptions.get(reason, ("An additional memory warning was reported", ""))
+                threshold = amount(thresholds.get(key), "Warning threshold")
+                if threshold is not None:
+                    description += " · threshold " + Settings.memory_amount(threshold)
+                warnings.append(description + ".")
+            if not warnings:
+                warnings.append("The status helper recommends reviewing memory use.")
+        return values, warnings, errors
+
+    def memory_loaded(self, report, error=None):
+        if report is None:
+            values = dict.fromkeys(("available", "total", "swap", "sway_pss", "sway_rss"))
+            warnings, errors = [], [error or "Memory status could not be read."]
+        else:
+            values, warnings, errors = report
+        available, total = values["available"], values["total"]
+        self.memory_label.set_text(self.memory_amount(available) + " available" if available is not None else "Available RAM: unavailable")
+        for key, label in self.memory_values.items():
+            label.set_text(self.memory_amount(values[key]))
+            label.set_tooltip_text(f"{values[key]:,} bytes" if values[key] is not None else None)
+        measurable = available is not None and total is not None and total > 0
+        self.memory_usage.set_visible(measurable)
+        self.memory_usage_note.set_visible(measurable)
+        if measurable:
+            self.memory_usage.set_fraction((total - available) / total)
+            self.memory_usage_note.set_text(self.memory_amount(total - available) + " of " + self.memory_amount(total) + " in use (estimate)")
+        known = any(value is not None for value in values.values())
+        advice = " ".join(warnings) if warnings else "No warning from available readings." if known else "Memory readings are unavailable."
+        if warnings:
+            advice += " This is advisory; no action has been taken. Save your work before restarting a session."
+        if errors:
+            advice += " " + " ".join(errors)[:400] + " Refresh to check again."
+        self.memory_advice.set_text(advice)
+        self.memory_refresh_button.set_sensitive(True)
+        self.memory_notice = "Memory warning" if warnings else "Check memory status below" if errors else "Memory status unavailable" if not known else ""
+        if self.current_page == "memory":
+            self.message(self.memory_notice)
+
+    def refresh_memory(self):
+        self.memory_refresh_button.set_sensitive(False)
+        self.memory_notice = "Reading memory status…"
+        self.memory_advice.set_text("Reading the latest values. No memory or session settings are changed.")
+        if not self.memory_label.get_text():
+            self.memory_label.set_text("Loading memory…")
+        if self.current_page == "memory":
+            self.message(self.memory_notice)
+        if "memory" in self.jobs:
+            self.memory_refresh_pending = True
+            return
+        self.background("memory", self.read_memory, self.memory_loaded)
+
+    def restart_sway(self, _button):
+        try:
+            subprocess.Popen(["ctlst-session", "reload"])
+            self.message("Configuration reload requested")
+        except OSError as error:
+            self.message(str(error))
+
+    def rebuild(self):
+        window = self.props.active_window
+        if window:
+            self.build_window(window)
+
+    def message(self, text):
+        self.status_text = text
+        if self.status_label:
+            self.status_label.set_text(text)
+            self.status_label.set_visible(bool(text))
+
+
+raise SystemExit(Settings().run(sys.argv))

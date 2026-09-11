@@ -1,0 +1,22 @@
+#!/bin/sh
+
+export LANG=C.UTF-8
+export LC_ALL=C.UTF-8
+export PATH="$HOME/.local/bin:$PATH"
+
+if command -v fastfetch >/dev/null 2>&1; then
+    fastfetch
+elif command -v neofetch >/dev/null 2>&1; then
+    neofetch --off --disable packages resolution de wm wm_theme theme icons \
+        terminal terminal_font gpu
+fi
+
+if [ -x /bin/ash ]; then
+    exec /bin/ash
+fi
+
+if [ -x /bin/bash ]; then
+    exec /bin/bash
+fi
+
+exec /bin/sh

@@ -1,0 +1,9 @@
+CTLST Shell
+Copyright 2026 Vladimir Kovalchuk
+
+Created and maintained by Vladimir "Vlad" Kovalchuk (@radmadvlad).
+
+The original CTLST work is licensed under the Apache License, Version 2.0.
+Upstream dependencies are separately installed, not bundled in this source
+snapshot. See THIRD_PARTY.md. Preserve this notice and LICENSE when redistributing
+the original CTLST work, together with any applicable third-party notices.
