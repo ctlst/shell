@@ -56,3 +56,20 @@ Native geometry and virtual-input results do not establish physical GPU
 performance, sensor behavior or keyboard-provider compatibility. A fresh user
 in an existing VM does not validate a fresh OS image or package upgrade/removal.
 Record these distinctions in [validation results](../release/VALIDATION.md).
+
+## Screen sleep regression
+
+In the disposable Linux VM, with Sway, swayidle, wtype, jq and flock installed:
+
+```sh
+CTLST_TEST_SCREEN_SLEEP=1 python3 -m pytest -q tests/test_screen_sleep.py
+```
+
+This creates private headless Sway sessions and exercises the real idle/resume
+protocol with simulated keyboard input. It covers automatic and manual sleep,
+Never and keep-awake settings, daemon recovery, output selection, and input
+arriving during a slow privacy-screen handoff. Panel power and privacy-screen
+mapping are fixtures; physical touchscreen, display power and device power-key
+behavior require separate hardware checks. The automatic timeout case takes
+one minute. These nine cases are skipped by ordinary `make check` unless the
+explicit environment flag is set.

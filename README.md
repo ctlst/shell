@@ -23,6 +23,7 @@ See [platform support and limitations](BETA.md) and [security](SECURITY.md).
 - Searchable app drawer, task dock and workspace overview.
 - Quick Settings and Settings with OpenGL rendering.
 - Themes, accent colors, wallpapers and user CSS.
+- Configurable screen auto sleep and input wake after manual screen sleep.
 - A separate display-manager entry that starts Sway.
 - Python widgets that can be added without rebuilding Home.
 

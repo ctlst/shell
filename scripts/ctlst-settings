@@ -1044,7 +1044,7 @@ class Settings(Gtk.Application):
 
         timeout_row = Gtk.Box(spacing=12)
         timeout_row.add_css_class("settings-row")
-        timeout_row.append(Gtk.Label(label="Turn screen off", xalign=0, hexpand=True, wrap=True))
+        timeout_row.append(Gtk.Label(label="Screen auto sleep", xalign=0, hexpand=True, wrap=True))
         timeout_values = (0, 60, 120, 300, 600, 1800)
         timeout_labels = ("Never", "1 minute", "2 minutes", "5 minutes", "10 minutes", "30 minutes")
         timeout_picker = self.choice(timeout_labels, "Screen timeout")
@@ -1055,6 +1055,13 @@ class Settings(Gtk.Application):
         timeout_row.append(self.display_control("timeout", timeout_picker))
         card.append(timeout_row)
         self.display_controls["timeout"] = (timeout_picker, timeout_values)
+        sleep_help = Gtk.Label(
+            label="Tap, move the pointer, or press a key to wake the privacy screen. "
+                  "Never disables auto sleep; manual screen sleep remains available.",
+            xalign=0, wrap=True,
+        )
+        sleep_help.add_css_class("settings-detail")
+        card.append(sleep_help)
 
         sound_row = Gtk.Box(spacing=12)
         sound_row.add_css_class("settings-row")

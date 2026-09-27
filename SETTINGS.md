@@ -102,3 +102,31 @@ See [configuration precedence](docs/ARCHITECTURE.md).
 Run `make check` and the [installed-session test](docs/CLEAN-ROOM-VM.md)
 when changing interactions. Physical GPU behavior, accessibility scaling and
 device-provider operations require separate validation.
+
+## Screen auto sleep
+
+Display & sound offers Never, 1, 2, 5, 10 and 30 minutes. Five minutes is the
+fallback. This controls display power only; applications keep running and the
+system does not suspend. Never disables the automatic timer while preserving
+manual sleep and input wake.
+
+The user-owned `screen-idle-seconds` file under
+`${XDG_CONFIG_HOME:-$HOME/.config}/ctlst/` stores one integer in seconds:
+`0`, `60`, `120`, `300`, `600` or `1800`. Missing or invalid values use `300`.
+`CTLST_CONFIG_DIR` overrides that directory for a configured session. Settings
+applies changes immediately; after editing the file directly, run
+`/usr/libexec/ctlst-shell/screen-idle start` in the session.
+
+The session starts the timer at login. **Screen off** in the session menu's
+More options page and `Super+Shift+Escape` invoke the same manual sleep action.
+The privacy cover finishes opening before input wake is armed, so input during
+that transition cannot immediately wake the newly blanked display. A later
+touch, pointer event or key wakes the cover. It remains an unauthenticated
+privacy screen; see [security](SECURITY.md).
+
+Output power defaults to all Sway outputs (`*`). A device profile or user
+`input.conf` can set `[input] output = CONNECTOR`; the existing session resolver
+exports it as `CTLST_OUTPUT_NAME`. Output selection changes take effect at next
+login. Device-specific power-key bindings can invoke `screen-idle sleep` and
+`screen-idle wake`; the core does not take ownership of the hardware power key
+or change logind's power policy.
