@@ -2,6 +2,9 @@
 
 Simple defaults. Your phone, your way.
 
+`master` is the default integration branch. Base new work and pull requests
+on `master`; the retained `codex/beta-preparation` branch is not the default.
+
 Keep the core small, preserve user dotfiles and upstream Sway, and put device
 integration and companion applications behind explicit boundaries. Read
 AGENTS.md, docs/PHILOSOPHY.md, BETA.md and the relevant component documentation.
