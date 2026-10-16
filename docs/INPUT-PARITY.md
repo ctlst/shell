@@ -23,6 +23,7 @@ the next login. `Super` refers to the configured Sway modifier (default Mod4).
 | Floating | Four-finger up or titlebar corner | Titlebar corner | `Super+Shift+Space` |
 | Terminal | Bar clock | Bar clock | `Super+Return` |
 | Session menu | Configured menu action | Configured menu action | `Super+Shift+E` |
+| Screen off | Session menu → More options | Session menu → More options | `Super+Shift+Escape` |
 | Privacy cover | Configured idle/power action | Session menu | `Super+Escape` |
 
 Keyboard, haptic and device actions require compatible external providers.
@@ -148,6 +149,10 @@ Disruptive actions require confirmation with Cancel first.
 See [Settings](../SETTINGS.md) and [session menu](SESSION-MENU.md).
 
 ## Privacy screen and passive overlays
+
+Screen sleep wakes on subsequent touch, pointer or keyboard input. Automatic
+sleep and manual Screen off share the same privacy-screen handoff. Configure
+the timeout in Settings → Display & sound; see [screen sleep](../SETTINGS.md#screen-auto-sleep).
 
 Swipe upward anywhere on the privacy screen to move it away. Short/cancelled
 drags settle back; horizontal/downward motion does not dismiss. Continue,

@@ -162,3 +162,12 @@ def test_launch_reservation_timeout_is_dotfile_controlled(tmp_path):
                              "import os; print(os.environ['CTLST_LAUNCH_TIMEOUT_SECONDS'])"],
                             env=environment(tmp_path), capture_output=True, text=True, check=True)
     assert result.stdout.strip() == "60"
+
+
+def test_screen_sleep_action_resolves_installed_helper(tmp_path):
+    result = subprocess.run(
+        [str(ROOT / "scripts/session-menu"), "--resolve", "Screen off"],
+        env=environment(tmp_path), capture_output=True, text=True, check=True,
+    )
+    assert str(ROOT / "scripts/screen-idle") in result.stdout
+    assert result.stdout.strip().endswith(" sleep")

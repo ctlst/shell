@@ -10,6 +10,7 @@ actions = {
     "Exit menu": None,
     "Close focused app": [str(libexec_root() / "close-active")],
     "Lock screen": [str(libexec_root() / "ctlstlock"), "lock"],
+    "Screen off": [str(libexec_root() / "screen-idle"), "sleep"],
     "Reload configuration": ["ctlst-session", "reload"],
     "Log out": ["swaymsg", "exit"],
 }

@@ -9,6 +9,7 @@ inhibit_file="$runtime_dir/sway-touch-screen-idle.inhibited"
 log_file="$runtime_dir/sway-touch-screen-idle.log"
 self="${CTLST_LIBEXEC_DIR:-/usr/libexec/ctlst-shell}/screen-idle"
 lock="${CTLST_LIBEXEC_DIR:-/usr/libexec/ctlst-shell}/ctlstlock"
+output="${CTLST_OUTPUT_NAME:-*}"
 default_seconds=300
 
 read_seconds() {
@@ -30,11 +31,29 @@ label_for_seconds() {
     esac
 }
 
+daemon_running() {
+    pid="$(cat "$pid_file" 2>/dev/null || true)"
+    case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$(cat "/proc/$pid/comm" 2>/dev/null || true)" = swayidle ]
+}
+
 stop_daemon() {
     if [ -s "$pid_file" ]; then
         pid="$(cat "$pid_file")"
         if [ "$(cat "/proc/$pid/comm" 2>/dev/null || true)" = swayidle ]; then
             kill "$pid" 2>/dev/null || true
+            # TERM runs a pending resume command. Let it finish before a new
+            # daemon can blank, otherwise the old process can wake it again.
+            attempts=0
+            while daemon_running; do
+                [ "$(sed -n 's/^State:[[:space:]]*\([^ ]*\).*/\1/p' "/proc/$pid/status")" = Z ] && break
+                attempts=$((attempts + 1))
+                if [ "$attempts" -ge 250 ]; then
+                    printf '%s\n' 'screen-idle: previous wake handler did not stop' >&2
+                    return 1
+                fi
+                sleep 0.02
+            done
         fi
     fi
     rm -f "$pid_file"
@@ -43,15 +62,25 @@ stop_daemon() {
 start_daemon() {
     stop_daemon
     seconds="$(read_seconds)"
-    [ "$seconds" -ne 0 ] || return 0
-    [ ! -e "$inhibit_file" ] || return 0
+    # Zero disables automatic idle, but keeps SIGUSR1/manual sleep and its
+    # matching resume handler available (including while an app keeps awake).
+    [ ! -e "$inhibit_file" ] || seconds=0
 
-    swayidle -w \
+    swayidle -C /dev/null -w \
         timeout "$seconds" "$self blank" \
         resume "$self wake" \
-        >>"$log_file" 2>&1 &
+        >>"$log_file" 2>&1 8>&- &
     printf '%s\n' "$!" >"$pid_file"
 }
+
+# Serialize daemon replacement and manual sleep requests. Timeout/resume
+# callbacks must remain outside this lock: swayidle waits for them with -w.
+case "${1:-status}" in
+    start|stop|cycle|set|sleep|inhibit)
+        exec 8>"$runtime_dir/sway-touch-screen-idle.lock"
+        flock -x 8
+        ;;
+esac
 
 case "${1:-status}" in
     start)
@@ -94,18 +123,42 @@ case "${1:-status}" in
         label_for_seconds "$2"
         ;;
     blank)
+        # Manual sleep has already mapped the lock before arming resume.
+        # Reopening it here would queue transition input behind swayidle -w
+        # and immediately wake the panel after this command finishes.
+        [ -e "$runtime_dir/ctlstlock.visible" ] || "$lock" lock
+        swaymsg output "$output" power off >/dev/null
+        ;;
+    sleep)
+        # Finish the slow surface/gesture handoff before entering idle. Input
+        # from the power release or an ending swipe must precede wake arming.
         "$lock" lock
-        swaymsg output DSI-1 power off >/dev/null
+        daemon_running || start_daemon
+        # Wayland uses a blocked signal/signalfd. Do not send USR1 during
+        # exec startup, when its default action would kill the new daemon.
+        attempts=0
+        while daemon_running; do
+            blocked="$(sed -n 's/^SigBlk:[[:space:]]*//p' "/proc/$pid/status")"
+            if [ -n "$blocked" ] && [ "$((0x$blocked & 512))" -ne 0 ]; then
+                kill -USR1 "$pid"
+                exit 0
+            fi
+            attempts=$((attempts + 1))
+            [ "$attempts" -lt 100 ] || break
+            sleep 0.02
+        done
+        printf '%s\n' 'screen-idle: wake handler unavailable' >&2
+        exit 1
         ;;
     wake)
-        swaymsg output DSI-1 power on >/dev/null
+        swaymsg output "$output" power on >/dev/null
         ;;
     inhibit)
         case "${2:-}" in
             on)
                 reason="${3:-focused app}"
                 printf '%s\n' "$reason" >"$inhibit_file"
-                stop_daemon
+                start_daemon
                 ;;
             off)
                 rm -f "$inhibit_file"
@@ -126,7 +179,7 @@ case "${1:-status}" in
         esac
         ;;
     *)
-        printf 'usage: screen-idle {start|stop|status|cycle|set|blank|wake|inhibit}\n' >&2
+        printf 'usage: screen-idle {start|stop|status|cycle|set|sleep|blank|wake|inhibit}\n' >&2
         exit 2
         ;;
 esac

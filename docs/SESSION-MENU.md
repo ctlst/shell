@@ -2,7 +2,9 @@
 
 The session menu is a Fuzzel client. The first page offers Exit menu, Lock
 screen, More options and available power actions. More options contains Close
-focused app, Reload configuration, Log out and Suspend when supported.
+focused app, Screen off, Reload configuration, Log out and Suspend when supported.
+Screen off opens the privacy cover and blanks the configured outputs; subsequent
+input wakes the cover. It does not suspend the system.
 
 The Lock screen action opens CTLST's unauthenticated privacy cover; it does
 not provide a secure session lock.
