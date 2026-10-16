@@ -374,6 +374,18 @@ def main() -> int:
             ("000000ff", "ffffffff"),
             key=lambda candidate: contrast_ratio(candidate, values["SHELL_ACCENT"]),
         )
+    # Previously imported themes may have accent ink on ordinary raised keys.
+    # Repair generated output as well as future imports; preserve readable ink.
+    key_fill = color_parts(values["KEYBOARD_FG_SPECIAL"])
+    key_back = color_parts(values["KEYBOARD_BG"])
+    alpha = key_fill[3] / 255
+    key_surface = "".join(f"{round(key_fill[i] * alpha + key_back[i] * (1 - alpha)):02x}"
+                          for i in range(3)) + "ff"
+    if contrast_ratio(values["KEYBOARD_TEXT_SPECIAL"], key_surface) < 4.5:
+        values["KEYBOARD_TEXT_SPECIAL"] = max(
+            (values["KEYBOARD_TEXT"], "000000ff", "ffffffff"),
+            key=lambda candidate: contrast_ratio(candidate, key_surface),
+        )
     values.setdefault("THEME_NAME", args.theme_dir.name)
     for key in COLOR_KEYS:
         color_parts(values[key])

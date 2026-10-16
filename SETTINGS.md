@@ -34,6 +34,13 @@ It does not guarantee every process has repainted. Partial reloads and ambiguous
 timeouts display recovery information; the UI does not automatically retry or
 roll back.
 
+Keyboard palettes exported by the theme renderer preserve readable modifier-key
+labels. If authored text has less than 4.5:1 contrast against the special-key
+surface, the generated value uses a contrasting text color. This also repairs
+previously imported palettes without rewriting the source theme. Run
+`ctlst-session reload` to regenerate; the external keyboard provider controls
+when it rereads those colors.
+
 ## Wallpaper
 
 Collection selection and **Choose from files** create a preview draft.
