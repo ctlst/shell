@@ -1,5 +1,45 @@
 # Quick Settings and notifications
 
+Bluetooth pairing uses an application-local BlueZ Agent1 with on-screen PIN,
+passkey and comparison prompts. Only requests from the current BlueZ bus owner
+for the explicitly selected device are accepted; this agent never becomes the
+system default. Type a displayed keyboard PIN on the Bluetooth keyboard and
+press Enter. A keyboard reported paired but not bonded offers **Complete
+keyboard pairing** instead of incorrectly claiming it is ready for input.
+
+Trust and connection follow a successful Pair and a verified `Bonded=true`
+property (a BlueZ version exposing that property is required). Classic keyboards
+connect their HID profile explicitly; LE devices use normal profile connection.
+No global bonding/security setting is relaxed. Cancel, Escape/back navigation,
+closing the shade or the 120-second deadline cancels an outstanding pairing.
+The code is not written to status files or logs. Existing devices are not
+automatically forgotten; a stale bond may require an explicit Forget and retry.
+
+Device dialogs and status labels wrap long names and errors. Hidden stack
+pages no longer contribute their width or height to the visible shade.
+`bluetooth-browser-test.c` plus `bluetooth-pairing-fixture.h` exercise native
+private-bus pairing, sender/target rejection, bond verification, HID connection,
+cancellation, and 320px minimum-width checks with the full Targus name.
+
+Bluetooth discovery stays active while the Bluetooth list is visible and stops
+when navigating away or hiding the shade. The shell owns its own BlueZ discovery
+session; it does not globally stop scans belonging to other applications.
+Opening the list starts discovery; SCAN retries after an error. Radio power,
+pairing consent and device actions remain separate controls.
+
+The device list uses the asynchronous BlueZ object manager, with no 16-device
+cutoff or repeated command-line snapshots. Name, alias, connection and pairing
+changes update existing buttons; unknown devices retain their address below
+the fallback label. Long names wrap. No periodic scan runs while the page is
+hidden. GTK/GIO supplies the client, so there is no new runtime dependency.
+
+`tests/bluetooth-browser-test.c` (under the component tree's parent) runs the
+actual list and discovery callbacks against a private mock BlueZ bus, without
+accessing the host radio. It covers 24 devices, delayed names, stable row
+identity, state updates, page exit, hiding during startup and error/retry.
+Build with GTK4, gtk4-layer-shell, libm and warnings as errors; run in an
+isolated Wayland VM session.
+
 `ctlstshade` is a resident C/GTK4 layer-shell surface. It covers the full output
 when open and provides system controls, details and notification actions.
 

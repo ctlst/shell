@@ -8,7 +8,7 @@ OUTPUT ?= ctlstshade
 
 all: $(OUTPUT)
 
-$(OUTPUT): ctlstshade.c ../ctlst-runtime.h
+$(OUTPUT): ctlstshade.c bluetooth-browser.h bluetooth-pairing.h ../ctlst-runtime.h
 	mkdir -p $(@D)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(LDFLAGS) $(LDLIBS)
 

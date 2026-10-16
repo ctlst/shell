@@ -363,6 +363,7 @@ class Settings(Gtk.Application):
             "wallpaper": ("Wallpaper", self.wallpaper_section),
             "connections": ("Connections", self.connections_section),
             "display": ("Display & sound", self.display_sound_section),
+            "battery": ("Battery", self.battery_section),
             "memory": ("Shell memory", self.memory_section),
         }
         self.built_pages = set()
@@ -420,6 +421,7 @@ class Settings(Gtk.Application):
             ("Device", (
                 ("connections", "network-wireless-symbolic", "Wi-Fi and Bluetooth"),
                 ("display", "display-brightness-symbolic", "Rotation, screen timeout and sound"),
+                ("battery", "battery-good-symbolic", "History, discharge and process activity"),
             )),
             ("Advanced", (
                 ("memory", "applications-system-symbolic", "Memory status and session tools"),
@@ -530,6 +532,19 @@ class Settings(Gtk.Application):
             self.message(str(error))
         return GLib.SOURCE_REMOVE
 
+    def battery_section(self):
+        section, card = self.section("Battery")
+        card.append(Gtk.Label(label="Charge history, time since full, screen-on time and process CPU activity. Recording continues when the Battery window is closed.", wrap=True, xalign=0))
+        button = Gtk.Button(label="Open battery history")
+        def launch(_button):
+            try:
+                subprocess.Popen([str(SCRIPT_DIR / "app-run"), "desktop", "dev.ctlst.Battery.desktop"])
+            except OSError as error:
+                self.message(str(error))
+        button.connect("clicked", launch)
+        card.append(button)
+        return section
+
     def navigation_key(self, _controller, keyval, _keycode, modifiers):
         back = keyval in (Gdk.KEY_Escape, Gdk.KEY_Back) or (
             keyval == Gdk.KEY_Left and modifiers & Gdk.ModifierType.ALT_MASK
@@ -541,6 +556,21 @@ class Settings(Gtk.Application):
         if keyval == Gdk.KEY_Escape:
             self.props.active_window.close()
             return True
+        if not modifiers & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK |
+                            Gdk.ModifierType.SUPER_MASK):
+            direction = {Gdk.KEY_Left: Gtk.DirectionType.LEFT,
+                         Gdk.KEY_Right: Gtk.DirectionType.RIGHT,
+                         Gdk.KEY_Up: Gtk.DirectionType.UP,
+                         Gdk.KEY_Down: Gtk.DirectionType.DOWN}.get(keyval)
+            if direction is not None:
+                window = self.props.active_window
+                focus = window.get_focus()
+                while focus is not None:
+                    if isinstance(focus, (Gtk.Editable, Gtk.TextView, Gtk.Range, Gtk.DropDown)):
+                        return False
+                    focus = focus.get_parent()
+                window.set_focus_visible(True)
+                return window.child_focus(direction)
         return False
 
     def section(self, title):

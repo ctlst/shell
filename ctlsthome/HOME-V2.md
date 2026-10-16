@@ -70,6 +70,17 @@ do not overwrite user layouts when updating packaged defaults.
 
 ## Paging
 
+`Super+PageUp`/`Super+PageDown` select the previous/next page while Home is visible,
+including in edit mode. These use the animated pager, do not wrap or create
+pages, and ignore requests during a drag, picker or ongoing transition. The
+`ctlst-shortcut page-prev` / `page-next` helpers send `[` / `]` on the private
+Home datagram socket. Rebind them in `~/.config/ctlst/sway.conf`; see
+[input controls](../docs/INPUT-PARITY.md).
+
+Plain arrows move a visible selector among icons and widgets on the current
+page. Enter/Space uses the same activation as touch; text entries and nested
+widget controls keep their own keys. Keyboard layout editing is still limited.
+
 Horizontal drags follow the finger. Release distance, fling velocity and
 `page.animation_ms` determine the destination and settling animation.
 Edit-mode edge dwell uses `page.edge_px` and `page.edge_dwell_ms`.

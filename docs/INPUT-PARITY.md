@@ -9,12 +9,13 @@ the next login. `Super` refers to the configured Sway modifier (default Mod4).
 
 | Action | Touch | Pointer | Keyboard |
 | --- | --- | --- | --- |
-| Home | Quick upward flick from bottom | Home in expanded dock | `Super+Home` |
+| Home | Quick upward flick from bottom | Home in expanded dock | `Super+H` / `Super+Home` |
+| Previous/next Home page | Horizontal Home drag | Horizontal Home drag | `Super+PageUp` / `Super+PageDown` |
 | Next/previous task | Horizontal scrub on bottom charm | Wheel/trackpad over charm | `Super+Tab` / `Super+Shift+Tab` |
 | Reveal task dock | Hold charm | Hover charm | Task-switch shortcuts reveal it |
 | Overview | Slow bottom pull or Recent apps | Recent apps in bar | `Super+O` |
 | App drawer | Upward pull in Home content | Apps on Home | `Super+D` |
-| Quick Settings | Top pull or bar chevron | Chevron/network control | `Super+A` |
+| Quick Settings | Top pull or bar chevron | Chevron/network control | `Super+M` / `Super+A` |
 | Back | Inward side-edge swipe | Surface-specific Back control | `Super+BackSpace` |
 | Close focused window | Action fan | Surface Close; optional taskbar middle-click | `Super+Shift+Q` |
 | Keyboard toggle | Three-finger down or action fan | Keyboard action | `Super+K` |
@@ -27,6 +28,28 @@ the next login. `Super` refers to the configured Sway modifier (default Mod4).
 Keyboard, haptic and device actions require compatible external providers.
 The privacy cover has no authentication. See [gesture details](../GESTUREMAP.md)
 for start regions, thresholds, priority and cancellation.
+
+Home-page shortcuts are distinct from app-workspace navigation. They stop at
+the first/last page and do nothing while Home is hidden or another shell
+overlay is open. Active drags, widget pickers and unfinished page transitions
+are not interrupted. `Super+arrows` moves window focus, and
+`Super+Shift+arrows` moves the focused window. `Super+Alt+arrows` remains an
+alias for window focus; `Super+Alt+H`
+replaces the previous `Super+H` focus-left binding. Bare arrows are untouched.
+
+For example, change Quick Settings to `Super+Q` in `~/.config/ctlst/sway.conf`:
+
+```sway
+unbindsym $mod+m
+bindsym --no-repeat $mod+q exec $ctlst/ctlst-shortcut shade
+```
+
+Run `ctlst-session reload` to apply it without rebuilding. Package defaults
+load first and user configuration last; updates preserve that user file.
+When replacing an existing combination directly, use `bindsym --no-warn`
+to acknowledge the intentional override without showing Sway's warning bar.
+Available `ctlst-shortcut` actions are `home`, `shade`, `drawer`, `page-prev`
+and `page-next`. The `--no-repeat` flag prevents held keys from repeating.
 
 ## Home and widgets
 
@@ -43,8 +66,13 @@ Notes opens its external editor on tap/click. Keyboard users can launch Notes
 from the drawer or run `ctlst-home-notes --edit`. The preview has no text entry;
 save/exit shortcuts belong to the selected editor.
 
-**Incomplete routes:** direct keyboard Home icon navigation/editing, Home page
-keyboard/wheel navigation and widget-picker keyboard interaction. External
+Plain arrows select Home icons/widgets on the current page, with an outline
+around the focused item; Enter/Space activates it. Home only holds keyboard
+focus while visible, below the higher shell overlays. Native text fields and
+interactive widget controls retain their own input handling.
+
+**Incomplete routes:** direct keyboard Home layout editing/removal, Home page
+wheel navigation and widget-picker keyboard interaction. External
 widget protocol v1 has no keyboard event channel. Use native companion
 applications for keyboard-heavy widget workflows.
 
@@ -53,6 +81,10 @@ applications for keyboard-heavy widget workflows.
 Typing filters the app catalog. Enter in search refreshes the current query
 and launches its first result; no matches launches nothing. Focused native
 controls use their own activation. Escape/Close dismisses.
+
+Up/Down transfers search focus into the app grid. Plain arrows select adjacent
+tiles and Enter activates the focused tile. Left/Right in search still moves
+the text caret. The selected/focused tile uses theme-provided focus styling.
 
 Edit offers Add/Remove from Home and Hide/Show via touch, pointer and Tab/Enter.
 Hidden apps remain searchable there. Row/search activation never launches an
@@ -80,12 +112,21 @@ See [Overview](../ctlstoverview/README.md).
 
 ## Quick Settings
 
+On Home, a downward pull can begin anywhere in the upper 60% of the display
+(40% up from the bottom). The 50–60% center band overlaps the App Drawer's
+upward-pull region: swipe down for Quick Settings, up for Apps, or horizontally
+to change Home pages. Other applications retain the top-bar-only start region.
+Set `[shade] home_pull_start_fraction` in `~/.config/ctlst/gestures.conf` to
+adjust the depth, measured from the top; the default is `0.60` in either rotation.
+
 Quick Settings owns keyboard input once opened. Escape leaves a detail page,
 then dismisses the shade. Partial pull previews do not take keys.
 
 Wi-Fi/Bluetooth/Sound toggle and detail controls are distinct native buttons.
 Touch, pointer and Tab/Enter activate the same callbacks. Brightness supports
 native arrow-key adjustment and owns its drag gesture.
+Plain arrows traverse other controls; sliders, text fields and selectors keep
+their native arrow behavior. Tab moves out of these controls.
 
 An upward content swipe scrolls while more content remains below. A new swipe
 started at the bottom, or when all content fits, dismisses. Header/handle,
@@ -116,6 +157,12 @@ gesture. See [privacy screen](../ctlstlock/README.md).
 The action fan and window-drop overlay are passive feedback. The gesture daemon
 owns selection/execution; use the corresponding Sway commands for keyboard
 operation. See [window movement](../WINDOW-MANAGEMENT.md).
+
+The quick-action X and shared close command request normal shutdown first.
+If the window remains, a separate Keep open / Force quit menu supports touch,
+pointer and arrows/Return; Escape cancels and the default is Keep open.
+Force quit can discard unsaved work in all windows of that app process.
+See [close recovery](../ctlstaction/README.md) for cancellation and configuration.
 
 ## Contributor requirements
 

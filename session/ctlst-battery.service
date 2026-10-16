@@ -1,0 +1,13 @@
+[Unit]
+Description=CTLST battery history recorder
+
+[Service]
+ExecStart=/usr/bin/ctlst-battery daemon
+Restart=on-failure
+RestartSec=30
+UMask=0077
+Nice=10
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

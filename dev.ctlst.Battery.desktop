@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Battery
+Comment=Battery history, discharge trends and process activity
+Exec=ctlst-battery
+Icon=battery-good-symbolic
+Terminal=false
+Categories=Settings;System;Monitor;
+StartupNotify=true

@@ -11,6 +11,7 @@ applications and libraries are installed by the operating system.
 | Home, pages, built-in widgets and widget host | C / GTK4 | `ctlsthome/` |
 | App drawer | Python / GTK4 | `scripts/ctlstdrawer`, `scripts/ctlstdrawer-ui` |
 | Settings | Python / GTK4 | `scripts/ctlst-settings` |
+| Battery history and recorder | Python / GTK4 + SQLite | `scripts/ctlst-battery`, `scripts/ctlst_battery*.py` |
 | Dock/charm | C / GTK4 | `ctlstdock/` |
 | Workspace overview | C / GTK4 | `ctlstoverview/` |
 | Quick Settings | C / GTK4 | `ctlstshade/` |
@@ -18,6 +19,7 @@ applications and libraries are installed by the operating system.
 | Gesture routing | C / libinput | `ctlst-gestured/` |
 | Action feedback | C / GTK4 | `ctlstaction/` |
 | Session, app launching, workspace and memory helpers | Python + shell | `session/`, `scripts/` |
+| Confirmed force-close recovery | Python + shell / Fuzzel integration | `scripts/close-active`, `scripts/ctlst_close.py` |
 | Sway configuration and defaults | Sway config, INI, JSON, YAML | `sway/`, `config/defaults/` |
 | Themes and artwork | CSS, configuration, SVG, PNG | `themes/`, `wallpapers/`, root SVG files |
 | Notes | Python + YAML | `scripts/ctlst-home-notes`, `widgets/notes.yaml` |
@@ -30,7 +32,8 @@ one core package; `packages/components.toml` describes that package.
 
 ## Install layout
 
-- `/usr/bin/`: native surfaces and public session, Settings, Notes and widget commands.
+- `/usr/bin/`: native surfaces and public session, Settings, Battery, Notes and widget commands.
+- `/usr/lib/systemd/user/`: optional battery recorder service (not automatically enabled).
 - `/usr/libexec/ctlst-shell/`: internal helpers and widget tools.
 - `/usr/share/ctlst-shell/`: defaults, Sway configuration, themes, wallpapers,
   installed widget documentation and examples.

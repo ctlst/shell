@@ -12,6 +12,7 @@ components = [
   "ctlstshade",
   "drawer",
   "settings",
+  "battery-history",
   "notes-widget",
   "waybar-integration",
   "workspace-manager",

@@ -22,6 +22,7 @@ See [platform support and limitations](BETA.md) and [security](SECURITY.md).
 - Home pages with movable apps and resizable widgets.
 - Searchable app drawer, task dock and workspace overview.
 - Quick Settings and Settings with OpenGL rendering.
+- Local battery history, discharge estimates and process CPU activity.
 - Themes, accent colors, wallpapers and user CSS.
 - A separate display-manager entry that starts Sway.
 - Python widgets that can be added without rebuilding Home.
@@ -53,6 +54,7 @@ implementations, kernels and device services are outside this package.
 - [Touch, pointer and keyboard controls](docs/INPUT-PARITY.md)
 - [Widget development](docs/WIDGETS.md)
 - [Notes configuration](docs/NOTES.md)
+- [Battery history and configuration](docs/BATTERY.md)
 - [Design principles](docs/PHILOSOPHY.md)
 - [Contributing](CONTRIBUTING.md)
 - [Validation results](release/VALIDATION.md)

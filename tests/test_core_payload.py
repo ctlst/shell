@@ -1,5 +1,7 @@
 """Exercise the real install recipe; fixtures replace only native compilation."""
 from pathlib import Path
+import json
+import os
 import subprocess
 import tomllib
 
@@ -28,7 +30,7 @@ def staged(tmp_path):
 
 def test_installed_executables_are_only_owned_core(staged):
     assert {p.name for p in (staged / "usr/bin").iterdir()} == NATIVE | {
-        "ctlst-session", "ctlst-settings", "ctlst-widget", "ctlst-home-notes"}
+        "ctlst-session", "ctlst-settings", "ctlst-widget", "ctlst-home-notes", "ctlst-battery"}
     assert not (staged / "usr/share/fonts").exists()
     forbidden = {"system", "patches", "firmware", "modules", "wvkbd", "lisgd",
                  "ctlstdialer", "ctlstmessages", "ctlst-smsd", "ctlstfiles", "ctlstpad"}
@@ -43,6 +45,42 @@ def test_core_preserves_its_license_and_explains_retained_history(staged):
     assert {p.name for p in notices.iterdir()} == {
         "LICENSE", "NOTICE", "THIRD_PARTY.md", "CORE-CONTENTS.md"}
     assert "Vladimir Kovalchuk" in (notices / "NOTICE").read_text()
+
+
+def test_battery_is_a_complete_portable_shell_component(staged, tmp_path):
+    for relative in (
+        "usr/bin/ctlst-battery",
+        "usr/libexec/ctlst-shell/ctlst-battery",
+        "usr/libexec/ctlst-shell/ctlst_battery.py",
+        "usr/libexec/ctlst-shell/ctlst_battery_ui.py",
+        "usr/share/applications/dev.ctlst.Battery.desktop",
+        "usr/share/ctlst-shell/defaults/battery.conf",
+        "usr/share/ctlst-shell/docs/BATTERY.md",
+        "usr/lib/systemd/user/ctlst-battery.service",
+    ):
+        assert (staged / relative).is_file(), relative
+    sway = (staged / "usr/share/ctlst-shell/sway/ctlst.conf").read_text()
+    assert "exec $ctlst/ctlst-component $ctlst/ctlst-battery daemon" in sway
+    config = tmp_path / "user-config/ctlst/battery.conf"
+    config.parent.mkdir(parents=True)
+    original = "[battery]\ninterval_seconds=90\nprocess_activity=false\n"
+    config.write_text(original)
+    state = tmp_path / "user-state"
+    result = subprocess.run(
+        [str(staged / "usr/bin/ctlst-battery"), "config-check"],
+        env=os.environ | {
+            "CTLST_LIBEXEC_DIR": str(staged / "usr/libexec/ctlst-shell"),
+            "XDG_CONFIG_HOME": str(config.parents[1]),
+            "XDG_STATE_HOME": str(state),
+        },
+        capture_output=True, text=True, check=True,
+    )
+    assert json.loads(result.stdout) == {
+        "interval_seconds": 90, "retention_days": 30,
+        "process_activity": False, "device": "auto",
+    }
+    assert config.read_text() == original
+    assert not state.exists()  # Checking settings does not start recording.
 
 
 def test_installed_theme_uses_external_font(staged):
@@ -60,7 +98,7 @@ def test_package_map_names_integration_not_upstream_ownership():
     manifest = tomllib.loads((ROOT / "packages/components.toml").read_text())
     assert set(manifest["package"]) == {"ctlst-shell"}
     core = set(manifest["package"]["ctlst-shell"]["components"])
-    assert {"settings", "notes-widget"} <= core
+    assert {"settings", "notes-widget", "battery-history"} <= core
     assert {"sway-session-config", "waybar-integration", "notification-integration"} <= core
     assert not {"sway", "waybar", "mako", "status-bar"} & core
 

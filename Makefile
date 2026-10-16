@@ -10,14 +10,17 @@ CORE_COMPONENTS := ctlst-gestured ctlstaction ctlstdock ctlsthome ctlstlock ctls
 CORE_BINARIES := $(addprefix $(CORE_BIN_DIR)/,$(CORE_COMPONENTS))
 CORE_LIBEXEC := \
 	ctlst-control \
+	ctlst-shortcut \
 	ctlst-component \
 	app-run \
+	bluetooth-device-action \
 	capture-session-env \
 	clamp-floating \
 	close-active \
 	ctlst-memory-status \
 	ctlst-preferences \
 	ctlst-settings \
+	ctlst-battery \
 	ctlst-theme \
 	ctlst-theme-render \
 	ctlst-wallpaper \
@@ -79,8 +82,14 @@ install: core install-widget-tools
 	install -m 0755 session/ctlst-session "$(DESTDIR)$(BINDIR)/ctlst-session"
 	install -m 0644 scripts/ctlst_config.py "$(DESTDIR)$(LIBEXECDIR)/"
 	install -m 0755 session/ctlst-settings "$(DESTDIR)$(BINDIR)/ctlst-settings"
+	install -m 0755 session/ctlst-battery "$(DESTDIR)$(BINDIR)/ctlst-battery"
+	install -m 0644 scripts/ctlst_battery.py scripts/ctlst_battery_ui.py "$(DESTDIR)$(LIBEXECDIR)/"
+	install -m 0644 scripts/ctlst_close.py "$(DESTDIR)$(LIBEXECDIR)/"
+	mkdir -p "$(DESTDIR)$(PREFIX)/lib/systemd/user"
+	install -m 0644 session/ctlst-battery.service "$(DESTDIR)$(PREFIX)/lib/systemd/user/"
 	mkdir -p "$(DESTDIR)$(PREFIX)/share/applications" "$(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/apps"
 	install -m 0644 dev.ctlst.Settings.desktop "$(DESTDIR)$(PREFIX)/share/applications/"
+	install -m 0644 dev.ctlst.Battery.desktop "$(DESTDIR)$(PREFIX)/share/applications/"
 	install -m 0644 dev.ctlst.Settings.svg "$(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/apps/"
 	install -m 0644 dev.ctlst.Apps.svg "$(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/apps/"
 	for script in $(CORE_LIBEXEC); do \
@@ -109,6 +118,7 @@ install-widget-tools:
 	done
 	install -m 0644 docs/WIDGETS.md "$(DESTDIR)$(DATADIR)/docs/"
 	install -m 0644 docs/NOTES.md "$(DESTDIR)$(DATADIR)/docs/"
+	install -m 0644 docs/BATTERY.md "$(DESTDIR)$(DATADIR)/docs/"
 	install -m 0644 agent/pi/skills/ctlst-app-builder/references/widget-protocol-v1.md "$(DESTDIR)$(DATADIR)/docs/"
 	install -m 0644 examples/pocket-note/pocket-note.yaml "$(DESTDIR)$(DATADIR)/examples/pocket-note/"
 	install -m 0755 examples/pocket-note/ctlst-widget-pocket-note "$(DESTDIR)$(DATADIR)/examples/pocket-note/"

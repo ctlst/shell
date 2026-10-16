@@ -817,7 +817,8 @@ static const char *style_css =
 		" border: 0; border-radius: 0; color: @ctlst_text;"
 		" background: transparent; }"
 	"button.home-launcher-icon:hover { background: transparent; }"
-	"button.home-launcher-icon:focus-visible { outline: none; }"
+	"button.home-launcher-icon:focus-visible, .home-widget:focus-visible {"
+	" outline: 3px solid @ctlst_accent; outline-offset: -4px; border-radius: 16px; }"
 	"button.home-launcher-icon:focus-visible .home-launcher-icon-disc {"
 		" background: alpha(@ctlst_accent, .13); }"
 	".home-launcher-icon-disc { border-radius: 999px; border: 0;"
@@ -1162,7 +1163,8 @@ end_prompt_session(struct home *home, const char *keyboard_command)
 		return;
 	gtk_window_set_focus(home->window, NULL);
 	gtk_layer_set_keyboard_mode(home->window,
-	    GTK_LAYER_SHELL_KEYBOARD_MODE_NONE);
+	    home->visible && !home_is_locked(home) ?
+	    GTK_LAYER_SHELL_KEYBOARD_MODE_EXCLUSIVE : GTK_LAYER_SHELL_KEYBOARD_MODE_NONE);
 }
 
 static void
@@ -4322,6 +4324,7 @@ home_widget_container(struct home *home, struct home_grid_item *item,
 	 * the widget when it briefly has no parent. */
 	g_object_ref_sink(container);
 	gtk_widget_add_css_class(container, "home-widget");
+	gtk_widget_set_focusable(container, TRUE);
 	/* Clip card chrome to the cell; do not let content force the grid taller. */
 	gtk_widget_set_overflow(container, GTK_OVERFLOW_HIDDEN);
 	home_clip_box(card);
@@ -5139,11 +5142,10 @@ finish_show_focus(gpointer data)
 {
 	struct home *home = data;
 
-	if (gtk_window_get_focus(home->window) == home->root) {
-		gtk_window_set_focus(home->window, NULL);
+	/* Higher overlay layers retain priority over Home's keyboard focus. */
+	if (home->visible && !home_is_locked(home))
 		gtk_layer_set_keyboard_mode(home->window,
-		    GTK_LAYER_SHELL_KEYBOARD_MODE_NONE);
-	}
+		    GTK_LAYER_SHELL_KEYBOARD_MODE_EXCLUSIVE);
 	return G_SOURCE_REMOVE;
 }
 
@@ -5163,7 +5165,7 @@ finish_show(gpointer data)
 		return G_SOURCE_REMOVE;
 	}
 	gtk_layer_set_keyboard_mode(home->window,
-	    GTK_LAYER_SHELL_KEYBOARD_MODE_ON_DEMAND);
+	    GTK_LAYER_SHELL_KEYBOARD_MODE_EXCLUSIVE);
 	gtk_window_set_focus(home->window, home->root);
 	gtk_widget_grab_focus(home->root);
 	if (home->visual != NULL)
@@ -6278,13 +6280,8 @@ launcher_icon_button(struct home *home, GIcon *app_icon, const char *desktop_id)
 
 	gtk_widget_add_css_class(button, "home-launcher-icon");
 	gtk_widget_add_css_class(disc, "home-launcher-icon-disc");
-	/*
-	 * Touch/click only. Keep icons out of GTK directional keynav so arrow
-	 * keys never walk the launcher grid — especially while the prompt has
-	 * EXCLUSIVE keyboard, and so a stray focus cannot steal arrows when
-	 * Home is not the active typing surface (KEYBOARD_MODE_NONE).
-	 */
-	gtk_widget_set_focusable(button, FALSE);
+	/* Keyboard navigation shares the same activation as touch. */
+	gtk_widget_set_focusable(button, TRUE);
 	gtk_widget_set_halign(disc, GTK_ALIGN_CENTER);
 	gtk_widget_set_valign(disc, GTK_ALIGN_CENTER);
 	gtk_widget_set_hexpand(disc, FALSE);
@@ -7451,6 +7448,112 @@ cancel_agent_action(GtkButton *button, gpointer data)
 }
 
 static gboolean
+home_navigation_key(GtkEventControllerKey *controller, guint keyval,
+    guint keycode, GdkModifierType state, gpointer data)
+{
+	struct home *home = data;
+	GtkWidget *focus = gtk_window_get_focus(home->window);
+	GtkWidget *best = NULL;
+	double best_score = G_MAXDOUBLE;
+	graphene_rect_t origin;
+	bool have_origin = false;
+	bool grid_focus = false;
+	bool arrow = keyval == GDK_KEY_Left || keyval == GDK_KEY_Right ||
+	    keyval == GDK_KEY_Up || keyval == GDK_KEY_Down;
+	bool activate = keyval == GDK_KEY_Return || keyval == GDK_KEY_KP_Enter ||
+	    keyval == GDK_KEY_space;
+	(void)controller; (void)keycode;
+	if (!home->visible || home_is_locked(home) ||
+	    (state & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK)) != 0 ||
+	    (!arrow && !activate))
+		return FALSE;
+	if (home->widget_picker && gtk_widget_get_visible(home->widget_picker))
+		return FALSE;
+	if (home->active_drag_item || home->active_launcher_drag ||
+	    home->page_drag_active || home->page_drag_pending ||
+	    home->page_drag_owned || home->page_settle_source)
+		return TRUE;
+	g_autoptr(GPtrArray) candidates = g_ptr_array_new();
+	for (size_t i = 0; i < home->grid_item_count; i++) {
+		struct home_grid_item *item = &home->grid_items[i];
+		if (focus == item->container)
+			grid_focus = true;
+		if (!item->hidden && item->page == home->launcher_current_page &&
+		    item->container && gtk_widget_get_mapped(item->container)) {
+			g_ptr_array_add(candidates, item->container);
+			if (activate && focus == item->container) {
+				activate_home_widget(item);
+				return TRUE;
+			}
+		}
+	}
+	for (guint i = 0; home->launcher_icons && i < home->launcher_icons->len; i++) {
+		struct home_launcher_icon *icon = g_ptr_array_index(home->launcher_icons, i);
+		if (focus == icon->button)
+			grid_focus = true;
+		if (icon->page == home->launcher_current_page && icon->button &&
+		    gtk_widget_get_mapped(icon->button))
+			g_ptr_array_add(candidates, icon->button);
+	}
+	for (guint i = 0; i < candidates->len; i++)
+		if (focus == g_ptr_array_index(candidates, i)) {
+			if (activate)
+				return gtk_widget_activate(focus);
+			have_origin = gtk_widget_compute_bounds(focus, home->root, &origin);
+			break;
+		}
+	/* Native entries, sliders and widget controls keep their own key handling. */
+	if (focus && focus != home->root && !have_origin && !grid_focus)
+		return FALSE;
+	if (activate && grid_focus && !have_origin)
+		return TRUE; /* A page change must not activate an old off-screen item. */
+	if (!arrow)
+		return FALSE;
+	for (guint i = 0; i < candidates->len; i++) {
+		GtkWidget *candidate = g_ptr_array_index(candidates, i);
+		graphene_rect_t bounds;
+		if (candidate == focus || !gtk_widget_is_sensitive(candidate) ||
+		    !gtk_widget_compute_bounds(candidate, home->root, &bounds))
+			continue;
+		double score = bounds.origin.y * 10000.0 + bounds.origin.x;
+		if (have_origin) {
+			double dx = bounds.origin.x + bounds.size.width / 2 -
+			    origin.origin.x - origin.size.width / 2;
+			double dy = bounds.origin.y + bounds.size.height / 2 -
+			    origin.origin.y - origin.size.height / 2;
+			double along = keyval == GDK_KEY_Left ? -dx :
+			    keyval == GDK_KEY_Right ? dx : keyval == GDK_KEY_Up ? -dy : dy;
+			double across = (keyval == GDK_KEY_Left || keyval == GDK_KEY_Right) ? dy : dx;
+			if (along <= 1.0)
+				continue;
+			score = along + 2.0 * fabs(across);
+		}
+		if (score < best_score) {
+			best_score = score;
+			best = candidate;
+		}
+	}
+	if (best) {
+		gtk_window_set_focus_visible(home->window, TRUE);
+		gtk_widget_grab_focus(best);
+	}
+	return TRUE;
+}
+
+static void
+shortcut_page(struct home *home, int direction)
+{
+	/* Share the touch pager, but never interrupt a drag, picker or settle. */
+	if (!home->visible || home->active_launcher_drag != NULL ||
+	    home->active_drag_item != NULL || home->page_drag_pending ||
+	    home->page_drag_active || home->page_drag_owned ||
+	    home->page_settle_source != 0 ||
+	    (home->widget_picker != NULL && gtk_widget_get_visible(home->widget_picker)))
+		return;
+	set_launcher_page_animated(home, home->launcher_current_page + direction, true);
+}
+
+static gboolean
 socket_ready(gint fd, GIOCondition condition, gpointer data)
 {
 	struct home *home = data;
@@ -7486,9 +7589,12 @@ socket_ready(gint fd, GIOCondition condition, gpointer data)
 
 		if (command == 'E') {
 			/* Go Home: leave edit mode and return to the first page. */
+			abort_page_settle(home);
 			set_layout_editing(home, false);
 			set_launcher_page(home, 0);
-		} else if (command == 'S')
+		} else if (command == '[' || command == ']')
+			shortcut_page(home, command == '[' ? -1 : 1);
+		else if (command == 'S')
 			set_visible(home, true);
 		else if (command == 'H')
 			set_visible(home, false);
@@ -7794,6 +7900,10 @@ activate(GtkApplication *application, gpointer data)
 
 	root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 16);
 	home->root = root;
+	GtkEventController *navigation = gtk_event_controller_key_new();
+	gtk_event_controller_set_propagation_phase(navigation, GTK_PHASE_CAPTURE);
+	g_signal_connect(navigation, "key-pressed", G_CALLBACK(home_navigation_key), home);
+	gtk_widget_add_controller(GTK_WIDGET(home->window), navigation);
 	gtk_widget_set_name(root, "ctlsthome-root");
 	gtk_widget_set_focusable(root, TRUE);
 	gtk_widget_add_css_class(root, "home-root");

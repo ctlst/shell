@@ -777,7 +777,7 @@ class CtlstDrawer(Gtk.ApplicationWindow):
         Gtk4LayerShell.set_exclusive_zone(self, -1)
         Gtk4LayerShell.set_keyboard_mode(
             self,
-            Gtk4LayerShell.KeyboardMode.ON_DEMAND,
+            Gtk4LayerShell.KeyboardMode.NONE,
         )
         self.set_name("ctlstdrawer")
         self.set_title("ctlstdrawer")
@@ -924,7 +924,10 @@ class CtlstDrawer(Gtk.ApplicationWindow):
             model=self.store,
             filter=self.app_filter,
         )
-        selection = Gtk.NoSelection(model=self.filtered)
+        selection = Gtk.SingleSelection(model=self.filtered)
+        selection.set_autoselect(False)
+        selection.set_can_unselect(True)
+        selection.set_selected(Gtk.INVALID_LIST_POSITION)
 
         factory = Gtk.SignalListItemFactory()
         factory.connect("setup", self.setup_tile)
@@ -1693,6 +1696,15 @@ class CtlstDrawer(Gtk.ApplicationWindow):
         focus = self.get_focus()
         search_focused = focus is self.search or (
             focus is not None and focus.is_ancestor(self.search))
+        if (keyval in (Gdk.KEY_Left, Gdk.KEY_Right, Gdk.KEY_Up, Gdk.KEY_Down) and
+                (focus is self.initial_focus or
+                 (search_focused and keyval in (Gdk.KEY_Up, Gdk.KEY_Down)))):
+            self.on_search_changed(self.search)
+            if self.filtered.get_n_items():
+                self.set_focus_visible(True)
+                self.grid.grab_focus()
+                self.grid.scroll_to(0, Gtk.ListScrollFlags.FOCUS | Gtk.ListScrollFlags.SELECT, None)
+            return True
         if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter) and (
                 search_focused or focus is self.initial_focus):
             # GtkSearchEntry delays search-changed. Enter must use the text
@@ -1858,10 +1870,9 @@ class DrawerApplication(Gtk.Application):
 
     def show_window(self, offset_y=0, focus=True):
         was_visible = os.path.exists(self.visible_file)
-        Gtk4LayerShell.set_keyboard_mode(
-            self.window, Gtk4LayerShell.KeyboardMode.EXCLUSIVE if focus
-            else Gtk4LayerShell.KeyboardMode.ON_DEMAND,
-        )
+        # A committed drawer must take keys above Home; a pull preview must not.
+        Gtk4LayerShell.set_keyboard_mode(self.window,
+            Gtk4LayerShell.KeyboardMode.EXCLUSIVE if focus else Gtk4LayerShell.KeyboardMode.NONE)
         # Never re-open with a leftover press-hold ghost from a cancelled drop.
         if self.window is not None and self.window.drop_entry is None:
             self.window.reset_drop_drag()
@@ -1891,10 +1902,10 @@ class DrawerApplication(Gtk.Application):
             GLib.idle_add(self.window.focus_canvas)
 
     def hide_window(self, clear_drop=True):
+        Gtk4LayerShell.set_keyboard_mode(self.window, Gtk4LayerShell.KeyboardMode.NONE)
         if clear_drop and self.window is not None:
             self.window.reset_drop_drag()
         self.window.set_visible(False)
-        Gtk4LayerShell.set_keyboard_mode(self.window, Gtk4LayerShell.KeyboardMode.NONE)
         self.window.motion_panel.set_translation(0)
         self.set_visible_state(False)
 

@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/random.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/un.h>
@@ -23,6 +24,8 @@
 #define SHADE_SETTLE_DURATION_US 180000.0
 
 static const char *component_css =
+    "window#ctlstshade button:focus-visible, window#ctlstshade switch:focus-visible,"
+    " window#ctlstshade scale:focus-visible { outline: 3px solid @ctlst_accent; outline-offset: -3px; }"
     "window#ctlstshade.gsk-motion { background: transparent;"
     " background-image: none; }"
     ".shade-root { background: alpha(@ctlst_bg, 0.94); padding: 8px 12px 14px;"
@@ -125,6 +128,19 @@ struct app {
 	GtkStack *stack;
 	GtkBox *network_list;
 	GtkBox *bluetooth_list;
+	GDBusObjectManager *bt_manager;
+	GDBusProxy *bt_adapter;
+	GHashTable *bt_rows;
+	guint bt_refresh_source;
+	bool bt_loading, bt_busy, bt_starting, bt_scanning;
+	bool bt_status_action;
+	bool bt_pair_active, bt_pair_busy, bt_pair_call_pending, bt_agent_registered;
+	bool bt_pair_keyboard, bt_pair_classic, bt_pair_updating_dialog;
+	guint bt_agent_id, bt_pair_timeout;
+	char *bt_pair_path, *bt_pair_name;
+	GDBusMethodInvocation *bt_pair_request;
+	GtkEntry *bt_pair_entry;
+	bool bt_pair_numeric;
 	GtkBox *notification_list;
 	GtkWidget *notification_clear;
 	GtkLabel *network_name;
@@ -649,8 +665,25 @@ key_pressed(GtkEventControllerKey *controller, guint keyval, guint keycode,
 	(void)keycode;
 	(void)state;
 	if (keyval != GDK_KEY_Escape &&
-	    !(keyval == GDK_KEY_Left && (state & GDK_ALT_MASK) != 0))
-		return FALSE;
+	    !(keyval == GDK_KEY_Left && (state & GDK_ALT_MASK) != 0)) {
+		GtkDirectionType direction;
+		if ((state & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK)) != 0)
+			return FALSE;
+		switch (keyval) {
+		case GDK_KEY_Left: direction = GTK_DIR_LEFT; break;
+		case GDK_KEY_Right: direction = GTK_DIR_RIGHT; break;
+		case GDK_KEY_Up: direction = GTK_DIR_UP; break;
+		case GDK_KEY_Down: direction = GTK_DIR_DOWN; break;
+		default: return FALSE;
+		}
+		for (GtkWidget *focus = gtk_window_get_focus(app->window); focus;
+		    focus = gtk_widget_get_parent(focus))
+			if (GTK_IS_EDITABLE(focus) || GTK_IS_TEXT_VIEW(focus) ||
+			    GTK_IS_RANGE(focus) || GTK_IS_DROP_DOWN(focus))
+				return FALSE;
+		gtk_window_set_focus_visible(app->window, TRUE);
+		return gtk_widget_child_focus(GTK_WIDGET(app->window), direction);
+	}
 	if (strcmp(gtk_stack_get_visible_child_name(app->stack), "settings") != 0)
 		gtk_stack_set_visible_child_name(app->stack, "settings");
 	else
@@ -659,12 +692,25 @@ key_pressed(GtkEventControllerKey *controller, guint keyval, guint keycode,
 }
 
 static void
+wrap_dialog_labels(GtkWidget *widget)
+{
+	if (GTK_IS_LABEL(widget)) {
+		gtk_label_set_wrap(GTK_LABEL(widget), TRUE);
+		gtk_label_set_wrap_mode(GTK_LABEL(widget), PANGO_WRAP_WORD_CHAR);
+	}
+	for (GtkWidget *child = gtk_widget_get_first_child(widget); child != NULL;
+	    child = gtk_widget_get_next_sibling(child))
+		wrap_dialog_labels(child);
+}
+
+static void
 show_dialog_page(struct app *app, GtkWidget *page)
 {
 	GtkWidget *old = gtk_stack_get_child_by_name(app->stack, "dialog");
 
+	wrap_dialog_labels(page);
 	if (old != NULL) {
-		gtk_stack_set_visible_child_name(app->stack, "home");
+		gtk_stack_set_visible_child_name(app->stack, "settings");
 		gtk_stack_remove(app->stack, old);
 	}
 	gtk_stack_add_named(app->stack, page, "dialog");
@@ -1310,6 +1356,8 @@ bluetooth_device_set(const char *output)
 }
 
 static void refresh_bluetooth_devices(struct app *app);
+static void bt_pair_start(struct app *app, const char *address, const char *name);
+static void bt_pair_cancel(struct app *app);
 static GtkWidget *make_button(const char *label, const char *style,
     GCallback callback, struct app *app);
 
@@ -1324,6 +1372,7 @@ refresh_bluetooth_later(gpointer data)
 	refresh_status(app);
 	refresh_bluetooth_devices(app);
 	if (g_file_get_contents(path, &content, NULL, NULL)) {
+		app->bt_status_action = true;
 		char **fields = g_strsplit(content, "\t", 5);
 		const char *result = fields[0] != NULL ? fields[0] : "failed";
 		const char *action = fields[1] != NULL ? fields[1] : "update";
@@ -1373,6 +1422,11 @@ bluetooth_action_run(GtkButton *button, gpointer data)
 	    NULL};
 	char *status;
 
+	if (strcmp(action, "pair") == 0) {
+		bt_pair_start(app, address, name);
+		g_free(script);
+		return;
+	}
 	status = g_strdup_printf("%s %s...", action, name);
 	gtk_label_set_text(app->bluetooth_status, status);
 	run_detached(argv);
@@ -1387,17 +1441,22 @@ static void
 show_bluetooth_actions(struct app *app, const char *address,
     const char *name, bool connected)
 {
+	/* Direct device-page opens also need the live BlueZ cache for pairing. */
+	refresh_bluetooth_devices(app);
 	char *info_argv[] = {"bluetoothctl", "info", (char *)address, NULL};
 	char *info = run_capture(info_argv);
 	char *battery = key_value(info, "Battery Percentage");
 	char *icon = key_value(info, "Icon");
+	bool repair = strcmp(icon, "input-keyboard") == 0 &&
+	    strstr(info, "Bonded: no") != NULL;
 	char **info_lines = g_strsplit(info, "\n", 0);
 	GString *services = g_string_new(NULL);
 	GtkWidget *root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
 	GtkWidget *eyebrow = gtk_label_new("Bluetooth device");
 	GtkWidget *title = gtk_label_new(name);
 	GtkWidget *detail;
-	GtkWidget *primary = make_button(connected ? "Disconnect" : "Connect",
+	GtkWidget *primary = make_button(repair ? "Complete keyboard pairing" :
+	    (connected ? "Disconnect" : "Connect"),
 	    "shade-action", G_CALLBACK(bluetooth_action_run), app);
 	GtkWidget *forget = make_button("Forget device", "shade-action",
 	    G_CALLBACK(bluetooth_action_run), app);
@@ -1423,7 +1482,8 @@ show_bluetooth_actions(struct app *app, const char *address,
 		g_string_append(services, uuid);
 	}
 	detail_text = g_strdup_printf("%s\nBattery %s  /  Type %s\n%s",
-	    connected ? "Connected and ready to use" : "Paired with this phone",
+	    repair ? "Keyboard input is blocked until secure pairing is completed" :
+	    (connected ? "Bluetooth connected" : "Paired with this phone"),
 	    strcmp(battery, "--") == 0 ? "not reported" : battery,
 	    strcmp(icon, "--") == 0 ? "unknown" : icon,
 	    services->len > 0 ? services->str : "No profile details reported");
@@ -1438,7 +1498,7 @@ show_bluetooth_actions(struct app *app, const char *address,
 	gtk_label_set_xalign(GTK_LABEL(detail), 0);
 	gtk_label_set_wrap(GTK_LABEL(detail), TRUE);
 	g_object_set_data(G_OBJECT(primary), "action",
-	    connected ? "disconnect" : "connect");
+	    repair ? "pair" : (connected ? "disconnect" : "connect"));
 	g_object_set_data(G_OBJECT(forget), "action", "forget");
 	g_object_set_data_full(G_OBJECT(primary), "address",
 	    g_strdup(address), g_free);
@@ -1516,82 +1576,8 @@ bluetooth_device_clicked(GtkButton *button, gpointer data)
 	show_bluetooth_pair_confirmation(app, address, name);
 }
 
-static void
-refresh_bluetooth_devices(struct app *app)
-{
-	char *all_argv[] = {"bluetoothctl", "devices", NULL};
-	char *paired_argv[] = {"bluetoothctl", "devices", "Paired", NULL};
-	char *connected_argv[] = {"bluetoothctl", "devices", "Connected", NULL};
-	char *all = run_capture(all_argv);
-	char *paired_text = run_capture(paired_argv);
-	char *connected_text = run_capture(connected_argv);
-	GHashTable *paired = bluetooth_device_set(paired_text);
-	GHashTable *connected = bluetooth_device_set(connected_text);
-	char **lines = g_strsplit(all, "\n", 0);
-	int rows = 0;
-
-	clear_box(app->bluetooth_list);
-	for (int index = 0; lines[index] != NULL && rows < 16; index++) {
-		char **parts = g_strsplit(lines[index], " ", 3);
-		bool is_paired;
-		bool is_connected;
-		const char *state;
-		GtkWidget *button;
-		GtkWidget *label_widget;
-		char *label;
-
-		if (parts[0] == NULL || parts[1] == NULL || parts[2] == NULL ||
-		    strcmp(parts[0], "Device") != 0) {
-			g_strfreev(parts);
-			continue;
-		}
-		is_paired = g_hash_table_contains(paired, parts[1]);
-		is_connected = g_hash_table_contains(connected, parts[1]);
-		state = is_connected ? "Connected - tap to disconnect" :
-		    (is_paired ? "Paired - tap to connect" :
-		    "Available - tap to pair");
-		label = g_strdup_printf("%s\n%s", parts[2], state);
-		button = gtk_button_new_with_label(label);
-		gtk_widget_add_css_class(button, "device-row");
-		if (is_connected)
-			gtk_widget_add_css_class(button, "device-connected");
-		label_widget = gtk_button_get_child(GTK_BUTTON(button));
-		if (GTK_IS_LABEL(label_widget))
-			gtk_label_set_xalign(GTK_LABEL(label_widget), 0);
-		g_object_set_data_full(G_OBJECT(button), "address",
-		    g_strdup(parts[1]), g_free);
-		g_object_set_data_full(G_OBJECT(button), "device-name",
-		    g_strdup(parts[2]), g_free);
-		g_object_set_data(G_OBJECT(button), "paired",
-		    GINT_TO_POINTER(is_paired));
-		g_object_set_data(G_OBJECT(button), "connected",
-		    GINT_TO_POINTER(is_connected));
-		g_signal_connect(button, "clicked",
-		    G_CALLBACK(bluetooth_device_clicked), app);
-		gtk_box_append(app->bluetooth_list, button);
-		g_free(label);
-		g_strfreev(parts);
-		rows++;
-	}
-	if (rows == 0) {
-		GtkWidget *empty = gtk_label_new(app->bluetooth_enabled ?
-		    "No Bluetooth devices found.\nTap SCAN to look nearby." :
-		    "Bluetooth is off.");
-
-		gtk_widget_add_css_class(empty, "shade-detail");
-		gtk_widget_set_margin_top(empty, 60);
-		gtk_label_set_justify(GTK_LABEL(empty), GTK_JUSTIFY_CENTER);
-		gtk_box_append(app->bluetooth_list, empty);
-	}
-	gtk_label_set_text(app->bluetooth_status,
-	    app->bluetooth_enabled ? "Bluetooth is on" : "Bluetooth is off");
-	g_strfreev(lines);
-	g_hash_table_unref(paired);
-	g_hash_table_unref(connected);
-	g_free(all);
-	g_free(paired_text);
-	g_free(connected_text);
-}
+#include "bluetooth-browser.h"
+#include "bluetooth-pairing.h"
 
 static void
 show_first_bluetooth_device(struct app *app)
@@ -1849,7 +1835,8 @@ static void
 action_bluetooth_scan(GtkButton *button, gpointer data)
 {
 	struct app *app = data;
-	char *argv[] = {"bluetoothctl", "--timeout", "4", "scan", "on", NULL};
+	app->bt_status_action = false;
+
 
 	(void)button;
 	if (!app->bluetooth_enabled) {
@@ -1858,8 +1845,8 @@ action_bluetooth_scan(GtkButton *button, gpointer data)
 		return;
 	}
 	gtk_label_set_text(app->bluetooth_status, "Scanning nearby devices...");
-	run_detached(argv);
-	g_timeout_add(4500, refresh_bluetooth_later, app);
+	refresh_bluetooth_devices(app);
+	bt_reconcile(app);
 }
 
 static void
@@ -3400,6 +3387,8 @@ build_bluetooth(struct app *app)
 	gtk_label_set_xalign(GTK_LABEL(status), 0);
 	gtk_widget_add_css_class(status, "shade-subtitle");
 	app->bluetooth_status = GTK_LABEL(status);
+	gtk_label_set_wrap(app->bluetooth_status, TRUE);
+	gtk_label_set_wrap_mode(app->bluetooth_status, PANGO_WRAP_WORD_CHAR);
 	gtk_box_append(GTK_BOX(root), status);
 	gtk_widget_set_hexpand(section, TRUE);
 	gtk_label_set_xalign(GTK_LABEL(section), 0);
@@ -3669,6 +3658,9 @@ activate(GtkApplication *application, gpointer data)
 	g_signal_connect(keys, "key-pressed", G_CALLBACK(key_pressed), app);
 	gtk_box_append(GTK_BOX(root), handle);
 	app->stack = GTK_STACK(gtk_stack_new());
+	/* A hidden device dialog must not dictate the width of every page. */
+	gtk_stack_set_hhomogeneous(app->stack, FALSE);
+	gtk_stack_set_vhomogeneous(app->stack, FALSE);
 	gtk_stack_set_transition_type(app->stack,
 	    GTK_STACK_TRANSITION_TYPE_SLIDE_LEFT_RIGHT);
 	gtk_stack_add_named(app->stack, build_quick_settings(app), "settings");
@@ -3676,6 +3668,8 @@ activate(GtkApplication *application, gpointer data)
 	gtk_stack_add_named(app->stack, build_bluetooth(app), "bluetooth");
 	gtk_stack_add_named(app->stack, build_sound(app), "sound");
 	refresh_notifications(app);
+	g_signal_connect(app->stack, "notify::visible-child-name", G_CALLBACK(bt_visibility_changed), app);
+	g_signal_connect(app->window, "notify::visible", G_CALLBACK(bt_visibility_changed), app);
 	gtk_widget_set_vexpand(GTK_WIDGET(app->stack), TRUE);
 	gtk_box_append(GTK_BOX(root), GTK_WIDGET(app->stack));
 	if (app->gsk_motion) {

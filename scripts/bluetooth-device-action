@@ -1,0 +1,42 @@
+#!/bin/sh
+set -eu
+
+action="${1:-}"
+address="${2:-}"
+name="${3:-$address}"
+state_file="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/ctlst-bluetooth-action.state"
+
+case "$address" in
+    [0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]) ;;
+    *) printf 'invalid Bluetooth address\n' >&2; exit 2 ;;
+esac
+
+run_action() {
+    case "$action" in
+        connect) timeout 20 bluetoothctl connect "$address" ;;
+        disconnect) timeout 20 bluetoothctl disconnect "$address" ;;
+        pair)
+            timeout 30 bluetoothctl pair "$address" &&
+                timeout 10 bluetoothctl trust "$address" &&
+                timeout 20 bluetoothctl connect "$address"
+            ;;
+        forget) timeout 20 bluetoothctl remove "$address" ;;
+        *)
+            printf 'usage: bluetooth-device-action {connect|disconnect|pair|forget} ADDRESS [NAME]\n' >&2
+            return 2
+            ;;
+    esac
+}
+
+if output="$(run_action 2>&1)" &&
+    ! printf '%s\n' "$output" |
+        grep -Eqi 'not available|not connected|failed|error|rejected|timed out'; then
+    result=success
+else
+    result=failed
+fi
+message="$(printf '%s\n' "$output" | tail -n 1 | tr '\t\r\n' '   ')"
+temporary="${state_file}.$$"
+printf '%s\t%s\t%s\t%s\t%s\n' "$result" "$action" "$address" "$name" "$message" >"$temporary"
+mv "$temporary" "$state_file"
+[ "$result" = success ]

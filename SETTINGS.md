@@ -7,7 +7,10 @@ asynchronous helper calls.
 ## Navigation
 
 The category index groups Appearance and Wallpaper under Personalize,
-Connections and Display & sound under Device, and Shell memory under Advanced.
+Connections, Display & sound and Battery under Device, and Shell memory under Advanced.
+
+Battery opens the independent history dashboard through the regular app
+launcher. See [recording, configuration and measurement limits](docs/BATTERY.md).
 Detail pages are created when opened.
 
 Back, Escape, platform Back and Alt+Left return to the index. Escape at the

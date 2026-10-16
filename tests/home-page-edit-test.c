@@ -140,5 +140,58 @@ int main(void)
 			}
 		}
 	}
+	/* Exercise the actual IPC receiver and pager without touching a user layout.
+	 * Run this fixture with a disposable HOME/XDG_CONFIG_HOME. */
+	int pair[2];
+	g_assert_cmpint(socketpair(AF_UNIX, SOCK_DGRAM, 0, pair), ==, 0);
+	home.visible = true;
+	home.launcher_current_page = 0;
+	home.config.page_animation_ms = 0;
+	home.page_settle_commit = -1;
+	home.layout_editing = true;
+	for (int i = 0; i < 3; i++) {
+		g_assert_cmpint(send(pair[0], "]", 1, 0), ==, 1);
+		socket_ready(pair[1], G_IO_IN, &home);
+		g_assert_cmpint(home.launcher_current_page, ==, MIN(i + 1, 2));
+	}
+	for (int i = 0; i < 3; i++) {
+		g_assert_cmpint(send(pair[0], "[", 1, 0), ==, 1);
+		socket_ready(pair[1], G_IO_IN, &home);
+		g_assert_cmpint(home.launcher_current_page, ==, MAX(1 - i, 0));
+	}
+	home.visible = false;
+	shortcut_page(&home, 1);
+	g_assert_cmpint(home.launcher_current_page, ==, 0);
+	home.visible = true;
+	home.active_drag_item = item;
+	shortcut_page(&home, 1);
+	g_assert_cmpint(home.launcher_current_page, ==, 0);
+	home.active_drag_item = NULL;
+	home.widget_picker = gtk_label_new("Picker");
+	g_object_ref_sink(home.widget_picker);
+	shortcut_page(&home, 1);
+	g_assert_cmpint(home.launcher_current_page, ==, 0);
+	g_clear_object(&home.widget_picker);
+	home.config.page_animation_ms = 100;
+	shortcut_page(&home, 1);
+	g_assert_cmpuint(home.page_settle_source, >, 0);
+	shortcut_page(&home, 1); /* A repeated request cannot interrupt settling. */
+	g_assert_cmpint(home.page_settle_commit, ==, 1);
+	int64_t deadline = g_get_monotonic_time() + 2000000;
+	while (home.page_settle_source != 0 && g_get_monotonic_time() < deadline) {
+		g_main_context_iteration(NULL, FALSE);
+		g_usleep(1000);
+	}
+	g_assert_cmpuint(home.page_settle_source, ==, 0);
+	g_assert_cmpint(home.launcher_current_page, ==, 1);
+	shortcut_page(&home, 1);
+	g_assert_cmpuint(home.page_settle_source, >, 0);
+	g_assert_cmpint(send(pair[0], "E", 1, 0), ==, 1);
+	socket_ready(pair[1], G_IO_IN, &home);
+	g_assert_cmpuint(home.page_settle_source, ==, 0);
+	g_assert_cmpint(home.launcher_current_page, ==, 0);
+	g_assert_false(home.layout_editing);
+	close(pair[0]); close(pair[1]);
+	g_print("PASS: Home shortcut IPC, bounds, edit-mode paging, hidden/drag/picker guards and animation\n");
 	return 0;
 }

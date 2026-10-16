@@ -1,7 +1,9 @@
 #!/bin/sh
 set -eu
 
-if "${CTLST_LIBEXEC_DIR:-/usr/libexec/ctlst-shell}/ctlstdrawer" close; then
+runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+if [ -e "$runtime_dir/ctlstdrawer.visible" ] &&
+    "${CTLST_LIBEXEC_DIR:-/usr/libexec/ctlst-shell}/ctlstdrawer" close; then
     exit 0
 fi
 
@@ -11,4 +13,4 @@ if pgrep -x fuzzel >/dev/null 2>&1; then
     exit 0
 fi
 
-swaymsg kill
+exec python3 "${CTLST_LIBEXEC_DIR:-/usr/libexec/ctlst-shell}/ctlst_close.py" "$@"

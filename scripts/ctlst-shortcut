@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+"""Configurable shell navigation actions, shared by Sway keyboard bindings."""
+import os
+from pathlib import Path
+import socket
+import subprocess
+import sys
+
+
+def main(action):
+    runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+    scripts = Path(__file__).resolve().parent
+    if action not in ("home", "shade", "drawer", "page-prev", "page-next"):
+        raise ValueError("expected home, shade, drawer, page-prev or page-next")
+    if (runtime / "ctlstlock.visible").exists():
+        return
+    if action.startswith("page-"):
+        # Never page behind an app or a modal shell surface. Home also checks
+        # its own visibility and rejects paging during active touch/drag work.
+        if not (runtime / "ctlsthome.visible").exists():
+            return
+        if any((runtime / name).exists() for name in (
+                "ctlstdrawer.visible", "ctlstshade.visible", "ctlstoverview.visible")):
+            return
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as client:
+            client.sendto(b"[" if action == "page-prev" else b"]",
+                          str(runtime / "ctlst-home.sock"))
+        return
+    command = {"home": ["ctlst-workspaced", "home"],
+               "shade": ["ctlstshade", "show"], "drawer": ["ctlstdrawer"]}[action]
+    subprocess.run([str(scripts / command[0]), *command[1:]], check=True)
+
+
+if __name__ == "__main__":
+    try:
+        main(sys.argv[1])
+    except (OSError, ValueError, IndexError, subprocess.CalledProcessError) as error:
+        print(f"ctlst-shortcut: {error}", file=sys.stderr)
+        raise SystemExit(1)

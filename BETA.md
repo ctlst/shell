@@ -14,11 +14,12 @@ CTLST Shell is a developer beta for Sway-based Linux sessions.
 
 | Component | Available functionality | Limitations |
 | --- | --- | --- |
-| Home | App grid, pages, editing, widget movement/resizing and responsive rotation layout | Direct keyboard editing and removal are incomplete. |
+| Home | App grid, pages, arrow-key selection/activation, editing, widget movement/resizing and responsive rotation layout | Direct keyboard layout editing and removal are incomplete. |
 | Drawer | App discovery, search, launch, Home placement and Hide/Show | Large catalogs and broader assistive navigation need additional testing. |
 | Dock and Overview | Task switching, workspace-group close and cached previews | Previews are last-seen screenshots, not live per-window textures. |
 | Quick Settings | Controls, provider feedback and gesture dismissal | Device actions require compatible services and permissions. |
 | Settings | Themes, accents, wallpaper import, preferences and diagnostics | Some configuration changes require a new session. |
+| Battery | Persistent charge history, sampled screen time, discharge estimates and CPU activity | No per-app energy counters; history starts at installation and excludes recording gaps. |
 | Session | Separate login entry, Sway startup, task coordination and scoped cleanup | Graphical display-manager selection and package lifecycle testing are incomplete. |
 | Themes | Layered configuration and user CSS | User theme catalogs and some custom-rendered geometry are not configurable. |
 | Notes | Local text preview, visible refresh and external-editor launch | An editor must be installed separately; notes are unencrypted. |

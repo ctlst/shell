@@ -98,8 +98,8 @@
 #define SHADE_PULL_TRACKING_GAIN 1.0
 #define SHADE_PULL_COMMIT_DISTANCE 96.0
 #define SHADE_PULL_INTENT_DISTANCE 16.0
-/* Home expands the top-edge shade target through the upper 40% of the output. */
-#define SHADE_HOME_PULL_START_DEPTH 0.40
+/* Home's upper 60% overlaps the drawer zone; vertical direction selects it. */
+#define SHADE_HOME_PULL_START_DEPTH 0.60
 #define WORKSPACE_WHEEL_DETENT 36.0
 /* Hold the home dash this long to commit the task-dock reveal animation. */
 #define WORKSPACE_WHEEL_REVEAL_HOLD_US 200000
@@ -3183,19 +3183,14 @@ close_focused_app(struct daemon_state *state)
 	if (state->debug)
 		fprintf(stderr, "close: node=%" PRId64 " workspace=%s windows=%d\n",
 		    node.id, workspace, windows);
-	if (windows <= 1 && strcmp(workspace, "1") != 0) {
-		snprintf(command, sizeof(command),
-		    "[con_id=%" PRId64 "] kill; workspace number 1", node.id);
-		if (!run_command(state, command))
-			return false;
-		state->workspace = FIRST_WORKSPACE;
-		snprintf(state->workspace_name, sizeof(state->workspace_name), "1");
-	} else {
-		snprintf(command, sizeof(command),
-		    "[con_id=%" PRId64 "] kill", node.id);
-		if (!run_command(state, command))
-			return false;
-	}
+	/* Snapshot the window before launching the independent close helper.
+	 * A hung client may ignore xdg_toplevel.close; only an explicit
+	 * confirmation in that helper can escalate to process termination. */
+	snprintf(command, sizeof(command),
+	    "exec $CTLST_LIBEXEC_DIR/close-active --node %" PRId64 " %s",
+	    node.id, windows <= 1 && strcmp(workspace, "1") != 0 ? "--return-home" : "");
+	if (!run_command(state, command))
+		return false;
 	if (runtime_file_exists(state, "ctlstkeyboard.visible"))
 		hide_keyboard(state);
 	if (runtime_file_exists(state, "ctlstpad.visible"))
@@ -4291,8 +4286,8 @@ shade_pull_content_zone_matches(const struct daemon_state *state,
 	double dx = fabs(end.x - start.x);
 
 	/* Values through 1.0 are output-height fractions; larger values are
-	 * absolute logical pixels. This keeps 0.40 rotation-independent while
-	 * still allowing exact per-device tuning such as 384. */
+	 * absolute logical pixels. This keeps 0.60 rotation-independent while
+	 * still allowing exact per-device tuning such as 576. */
 	if (depth <= 1.0)
 		depth *= state->output.rect.height;
 	if (depth > state->output.rect.height)
