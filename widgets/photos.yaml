@@ -1,0 +1,13 @@
+id: photos
+name: Photos
+kind: exec
+protocol: ctlst-widget-1
+interaction: launch
+min_columns: 2
+min_rows: 1
+default_columns: 3
+default_rows: 2
+exec: ctlst-home-tools
+args:
+  - photos
+desktop: dev.ctlst.Photos.desktop

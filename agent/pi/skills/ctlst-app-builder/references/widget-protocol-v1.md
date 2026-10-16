@@ -53,7 +53,13 @@ Home aspect-fits it into the allocation.
 ```
 
 Pause gameplay, animation, network refresh, and timers while hidden. Preserve
-state unless the widget's product behavior explicitly says otherwise.
+state unless the widget's product behavior explicitly says otherwise. Home also
+sends `visible:false` for off-page widgets and during page drag/settle. It retains
+the last painted scene, coalesces incoming frames, and resumes with the latest
+frame at rest. An unchanged scene does not redraw. Output is capped at roughly
+29 frames/second; ordinary data widgets should update much less often. Host
+input writes are asynchronous and bounded; a helper that stops consuming input
+is terminated rather than blocking Home.
 
 ### `pointer`
 
@@ -127,6 +133,19 @@ All coordinates use the declared view. Home ignores unknown node types.
 
 `align` is `left`, `center`, or `right`; `weight` is `normal` or `bold`.
 Text is clipped to the widget allocation. Keep strings concise.
+
+### Thumbnail image
+
+```json
+{"type":"image","path":"/home/user/.cache/ctlst/widget-images/example.png","x":8,"y":32,"width":180,"height":120,"radius":12}
+```
+
+PNG thumbnails must live under `$XDG_CACHE_HOME/ctlst/widget-images/` (default
+`~/.cache/ctlst/widget-images/`), be at most 512×512 pixels and 2 MiB each. Home
+caches at most four images per scene and uses a centered cover crop. Helpers
+must decode original photos outside Home, generate uniquely named thumbnails,
+and bound their cache. Home loads thumbnails only when accepting a changed
+scene at rest; drawing and swipe snapshots do not read files.
 
 ### Shared theme colors
 

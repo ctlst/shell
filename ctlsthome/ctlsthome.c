@@ -29,6 +29,7 @@
 #include "home-edit-frame.h"
 #include "home-picker-host.h"
 #include "home-launcher-host.h"
+#include "home-cell-content.h"
 #include "home-pager.h"
 #include "home-rotation.h"
 #include "home-widget-desc.h"
@@ -65,8 +66,8 @@
 #define home_rows(h) ((h)->config.grid_rows)
 #define home_spacing(h) ((h)->config.grid_spacing_px)
 #define home_cluster_rows(h) ((h)->config.grid_cluster_rows)
-#define home_strip_rows(h) ((h)->config.grid_rows - (h)->config.grid_cluster_rows)
 #define HOME_PAGE_PANELS_MAX 8
+#define HOME_DOCK_PAGE (-1)
 /* Keep neighboring card surfaces and shadows outside the settled viewport. */
 #define HOME_PAGER_SEAM_GUARD_PX 8
 /* Home actions are release-only taps, never the tail of a shell pull. */
@@ -239,6 +240,8 @@ struct status_snapshot {
 	char *battery_status;
 	char *network;
 	char *calls;
+	char *audio;
+	char *signal;
 };
 
 struct home_launcher_icon {
@@ -276,6 +279,10 @@ struct home {
 	GtkButton *visual_button;
 	GtkGLArea *visual;
 	GtkWidget *root;
+	GtkWidget *tray;
+	GtkWidget *scene_content;
+	bool dock_initialized;
+	bool launcher_drag_from_dock;
 	GtkOverlay *rotation_host;
 	GtkWidget *header;
 	GtkWidget *agent;
@@ -297,14 +304,19 @@ struct home {
 	int pager_layout_width;
 	int pager_layout_height;
 	GtkGrid *context_grid;
-	GtkGrid *strip_grid;
 	GtkWidget *cluster_host;
-	GtkWidget *strip_host;
 	struct home_widget_desc widget_descs[HOME_WIDGET_DESC_MAX];
 	int widget_desc_count;
 	GtkDrawingArea *grid_overlay;
-	GtkWidget *grid_anchor;
 	GtkWidget *calendar_month;
+	GtkLabel *calendar_title;
+	unsigned int calendar_event_days;
+	bool calendar_fetch_pending;
+	gint64 calendar_fetched_us;
+	char *pending_calendar;
+
+	struct tm calendar_date;
+	bool calendar_date_valid;
 	GtkWidget *calendar_compact;
 	GtkLabel *calendar_compact_date;
 	GtkLabel *calendar_compact_weekday;
@@ -315,7 +327,12 @@ struct home {
 	GtkLabel *weather_condition;
 	GtkLabel *weather_range;
 	GtkLabel *weather_temperature;
-	GtkWidget *glance_title;
+	GtkWidget *glance_grid;
+	GtkWidget *glance_cells[6];
+	GtkLabel *glance_values[6];
+	GtkLabel *glance_details[6];
+	GtkImage *glance_icons[6];
+	int glance_columns;
 	guint weather_source;
 	struct home_grid_item grid_items[HOME_GRID_WIDGET_MAX];
 	size_t grid_item_count;
@@ -436,6 +453,9 @@ struct home {
 	bool page_edge_haptic_sent;
 	bool cpu_sample_ready;
 	bool status_refresh_pending;
+	struct status_snapshot *pending_status;
+	bool clock_dirty;
+	bool weather_dirty;
 	unsigned int prompt_settle_attempts;
 	unsigned int visual_mode;
 	guint push_dwell_source;
@@ -455,7 +475,45 @@ static void ask_agent(GtkWidget *widget, gpointer data);
 static gboolean focus_prompt(gpointer data);
 static void soft_reclaim_prompt(struct home *home);
 static void schedule_prompt_reclaim(struct home *home, guint delay_ms);
+static void sync_widget_activity(struct home *home);
+static void resume_widget_updates(struct home *home);
+static void layout_glance(struct home *home, int columns, bool details);
+static void refresh_calendar_events(struct home *home);
+static void display_calendar_events(struct home *home);
+
+static bool
+home_widgets_moving(const struct home *home)
+{
+	return home->page_drag_active || home->page_drag_owned ||
+	    home->page_settle_source != 0;
+}
+
+static bool
+home_widget_on_page(const struct home *home, const char *id)
+{
+	for (size_t i = 0; i < home->grid_item_count; i++) {
+		const struct home_grid_item *item = &home->grid_items[i];
+		if (g_strcmp0(item->id, id) == 0)
+			return !item->hidden && item->page == home->launcher_current_page;
+	}
+	return false;
+}
+
+static void
+sync_widget_activity(struct home *home)
+{
+	const bool active = home->visible && !home_widgets_moving(home);
+	for (size_t i = 0; i < home->grid_item_count; i++) {
+		struct home_grid_item *item = &home->grid_items[i];
+		if (item->runtime != NULL)
+			home_widget_runtime_set_visible(item->runtime, active &&
+			    !item->hidden && item->page == home->launcher_current_page);
+	}
+}
+
 static void refresh_launcher_icons(struct home *home);
+static bool dock_drop_position(struct home *home, double x, double y, int *position);
+static void place_icon_in_dock(struct home *home, struct home_launcher_icon *icon, int position);
 static void render_launcher_page(struct home *home);
 static void relayout_launcher_icons(struct home *home);
 static void apply_home_grid(struct home *home);
@@ -664,6 +722,17 @@ static const char *style_css =
 	"@define-color ctlst_warm #7b5e7b; @define-color ctlst_danger #ba1a1a;"
 	"window#ctlsthome { color: @ctlst_text; background: transparent; }"
 	".home-root { padding: 8px 10px 6px; background: transparent; }"
+	".home-tray { min-height: 72px; padding: 6px; border-radius: 28px;"
+	" background: alpha(@ctlst_panel, .94); }"
+	"button.home-tray-app { min-width: 0; min-height: 64px; padding: 4px;"
+	" border: 0; border-radius: 22px; box-shadow: none;"
+	" background: transparent; color: @ctlst_text; }"
+	".home-tray.vertical { min-width: 72px; min-height: 0; }"
+	".home-tray.vertical button.home-tray-app { min-width: 64px; min-height: 0; }"
+	"button.home-tray-app:hover { background: alpha(@ctlst_accent, .12); }"
+	"button.home-tray-app:active { background: alpha(@ctlst_accent, .24); }"
+	"button.home-tray-app:focus-visible { outline: 2px solid @ctlst_accent;"
+	" outline-offset: -2px; }"
 	".home-clock { color: @ctlst_panel; font-size: 38px; font-weight: 500; }"
 	".home-date { color: @ctlst_panel; font-size: 14px; font-weight: 600; }"
 	".home-system { color: @ctlst_panel; font-size: 11px; }"
@@ -708,18 +777,18 @@ static const char *style_css =
 	" box-shadow: 0 2px 7px alpha(#000000, .25); }"
 	"window#ctlsthome button.home-widget-remove:hover > label {"
 	" background: shade(@ctlst_danger, .85); }"
-	".home-edit-controls { padding-bottom: 28px; }"
+	".home-edit-controls-inline { padding: 0; }"
 	".home-launcher-page-bar button { min-width: 44px; min-height: 44px;"
 	"  padding: 0; border: 0; border-radius: 22px; box-shadow: none;"
 	"  background-image: none; background: alpha(@ctlst_text, .08); color: @ctlst_text; }"
 	".home-launcher-page-bar button:disabled { opacity: .38; }"
-	".home-edit-toolbar { padding: 7px; border-radius: 24px;"
+	".home-edit-toolbar { padding: 4px; border-radius: 24px;"
 	"  background: alpha(@ctlst_panel, .96);"
-	"  box-shadow: 0 3px 12px alpha(#000000, .18); }"
-	"button.home-edit-action { min-height: 44px; padding: 0 10px;"
+	"  box-shadow: none; }"
+	"button.home-edit-action { min-height: 44px; padding: 0 8px;"
 	"  border: 0; border-radius: 18px; color: @ctlst_text;"
-	"  background: alpha(@ctlst_text, .08); font-size: 14px; font-weight: 500; }"
-	"button.home-edit-done { color: @ctlst_selected_text; background: @ctlst_accent; }"
+	"  background: transparent; font-size: 13px; font-weight: 500; }"
+	"button.home-edit-done { min-width: 44px; padding: 0; color: @ctlst_selected_text; background: @ctlst_accent; }"
 	".home-widget-picker { min-width: 0; min-height: 0;"
 	"  padding: 14px; border-radius: 24px; color: @ctlst_text;"
 	"  background: alpha(@ctlst_panel, .98);"
@@ -753,6 +822,7 @@ static const char *style_css =
 	" padding: 14px 16px; border-radius: 24px;"
 	" background: @ctlst_panel; color: @ctlst_text;"
 	" box-shadow: 0 4px 14px alpha(#000000, .14); }"
+	".home-calendar-event-day { border-bottom: 1px solid @ctlst_accent; }"
 	".home-calendar-title { color: @ctlst_text; font-size: 13px; font-weight: 700;"
 	" min-width: 0; }"
 	".home-calendar-month { min-width: 0; }"
@@ -776,8 +846,8 @@ static const char *style_css =
 	".home-glance-card { min-width: 0; min-height: 0; padding: 12px 14px;"
 	" border-radius: 24px; background: @ctlst_panel; color: @ctlst_text;"
 	" box-shadow: 0 5px 20px alpha(#080612, .16); }"
-	".home-glance-title { color: @ctlst_muted; font-size: 10px;"
-	" font-weight: 600; min-width: 0; }"
+	".home-glance-icon { -gtk-icon-size: 20px; color: @ctlst_accent; }"
+	".home-glance-value { font-size: 13px; font-weight: 650; color: @ctlst_text; }"
 	".home-glance-event { color: @ctlst_text; font-size: 12px; font-weight: 600;"
 	" min-width: 0; }"
 	".home-glance-meta { color: @ctlst_muted; font-size: 9px;"
@@ -836,8 +906,7 @@ static const char *style_css =
 	".home-launcher-remove { padding: 10px 18px; border-radius: 18px;"
 		" color: #ffffff; background: alpha(@ctlst_danger, .92);"
 		" font-size: 13px; font-weight: 700; }"
-	".home-launcher-page-bar { padding: 6px 10px; border-radius: 16px;"
-		" background: alpha(@ctlst_panel, .92); }"
+	".home-launcher-page-bar { padding: 0; background: transparent; }"
 	".home-launcher-page-label { color: @ctlst_muted; font-size: 11px;"
 		" font-weight: 650; }"
 	"button.home-call { min-height: 44px; border: 0; border-radius: 22px;"
@@ -1667,10 +1736,7 @@ reload_home_config(struct home *home)
 		gtk_grid_set_column_spacing(home->context_grid, home_spacing(home));
 		gtk_grid_set_row_spacing(home->context_grid, home_spacing(home));
 	}
-	if (home->strip_grid != NULL) {
-		gtk_grid_set_column_spacing(home->strip_grid, home_spacing(home));
-		gtk_grid_set_row_spacing(home->strip_grid, home_spacing(home));
-	}
+
 	(void)old_cols;
 	(void)old_rows;
 	render_launcher_page(home);
@@ -1708,8 +1774,7 @@ static void
 setup_theme(struct home *home)
 {
 	GtkCssProvider *base = gtk_css_provider_new();
-	char *path = g_build_filename(g_get_home_dir(), ".config", "sway-touch",
-	    NULL);
+	char *path = ctlst_config_path(NULL);
 	GFile *file = g_file_new_for_path(path);
 
 	gtk_css_provider_load_from_string(base, style_css);
@@ -1764,12 +1829,11 @@ grid_item_fits(struct home *home, struct home_grid_item *item, int column,
 {
 	int right = column + column_span;
 	int bottom = row + row_span;
-	int cluster = home_cluster_rows(home);
 
 	if (column < 0 || row < 0 ||
 	    column_span < home_grid_min_columns(item) ||
 	    row_span < home_grid_min_rows(item) ||
-	    right > home_cols(home) || bottom > cluster)
+	    right > home_cols(home) || bottom > home_rows(home))
 		return false;
 	if (item != NULL && item->hidden)
 		return true;
@@ -2675,10 +2739,22 @@ layout_launcher_icons(struct home *home)
 		struct home_launcher_icon *icon =
 		    g_ptr_array_index(home->launcher_icons, i);
 
-		if (icon == NULL || icon->button == NULL ||
-		    icon->page != home->launcher_current_page)
+		/* Every retained page shares the strip height. An off-screen
+		 * portrait icon must not keep the entire landscape grid tall. */
+		if (icon == NULL || icon->button == NULL)
 			continue;
-		layout_launcher_icon_button(icon->button, icon_px);
+		if (icon->page == HOME_DOCK_PAGE) {
+			int count = 0;
+			for (guint n = 0; n < home->launcher_icons->len; n++) {
+				struct home_launcher_icon *other = g_ptr_array_index(home->launcher_icons, n);
+				count += other->page == HOME_DOCK_PAGE;
+			}
+			int extent = home->landscape ? height : width;
+			int slot = MAX(1, (extent - 12 - MAX(0, count - 1) * 4) / MAX(1, count) - 8);
+			layout_launcher_icon_button(icon->button, MIN(51, slot));
+		} else {
+			layout_launcher_icon_button(icon->button, icon_px);
+		}
 	}
 }
 
@@ -2735,11 +2811,7 @@ seed_page_grid_anchors(GtkGrid *grid, int columns, int rows)
 	GtkWidget *child;
 	GtkWidget *span = gtk_label_new(" ");
 
-	/*
-	 * Anchors describe the grid's logical tracks.  The page-zero strip
-	 * changes from 5x2 below the cluster to 2x5 beside it, so discard only
-	 * our old sentinels before reseeding it for the new orientation.
-	 */
+	/* Replace only our sentinels when the configured grid dimensions change. */
 	child = gtk_widget_get_first_child(GTK_WIDGET(grid));
 	while (child != NULL) {
 		GtkWidget *next = gtk_widget_get_next_sibling(child);
@@ -2777,15 +2849,6 @@ seed_page_grid_anchors(GtkGrid *grid, int columns, int rows)
 		    GINT_TO_POINTER(1));
 		gtk_grid_attach(grid, anchor, 0, row, 1, 1);
 	}
-}
-
-static void
-seed_strip_grid_anchors(struct home *home)
-{
-	int columns = home->landscape ? home_strip_rows(home) : home_cols(home);
-	int rows = home->landscape ? home_cols(home) : home_strip_rows(home);
-
-	seed_page_grid_anchors(home->strip_grid, MAX(columns, 1), MAX(rows, 1));
 }
 
 static GtkWidget *
@@ -2931,41 +2994,6 @@ sync_page_panel_widths(struct home *home)
 		    width, height, width * pages, height, home->page_strip_x);
 		gtk_css_provider_load_from_string(home->pager_css, css);
 	}
-	/*
-	 * Keep the icon strip at strip_rows/grid_rows of the page height so the
-	 * cluster stays 5×5 and the strip 2×5 instead of the cluster eating the
-	 * leftover after a content-sized strip.
-	 */
-	if (home->strip_host != NULL && height > 1 && home_rows(home) > 0 &&
-	    !home->landscape) {
-		int spacing = home_spacing(home);
-		int strip_h = (height - spacing) * home_strip_rows(home) /
-		    home_rows(home);
-
-		if (strip_h < 1)
-			strip_h = 1;
-		gtk_widget_set_size_request(home->strip_host, -1, strip_h);
-		gtk_widget_set_hexpand(home->strip_host, TRUE);
-		gtk_widget_set_vexpand(home->strip_host, FALSE);
-		gtk_widget_set_valign(home->strip_host, GTK_ALIGN_FILL);
-	} else if (home->strip_host != NULL && home->landscape) {
-		int spacing = home_spacing(home);
-		int strip_w = (width - spacing) * home_strip_rows(home) /
-		    (home_cols(home) + home_strip_rows(home));
-
-		/*
-		 * Landscape keeps the five-column widget composition upright, then
-		 * transposes the portrait app rows into side-dock columns. Leaving
-		 * the dock at its 72px CSS minimum let the widget cluster take
-		 * almost the whole page and pushed both app columns past the edge.
-		 */
-		if (strip_w < 1)
-			strip_w = 1;
-		gtk_widget_set_size_request(home->strip_host, strip_w, -1);
-		gtk_widget_set_hexpand(home->strip_host, FALSE);
-		gtk_widget_set_vexpand(home->strip_host, TRUE);
-		gtk_widget_set_halign(home->strip_host, GTK_ALIGN_FILL);
-	}
 }
 
 static void
@@ -3017,7 +3045,22 @@ attach_launcher_icon_to_page(struct home *home, struct home_launcher_icon *icon)
 {
 	if (icon == NULL || icon->button == NULL)
 		return;
-	if (icon->page <= 0) {
+	if (icon->page == HOME_DOCK_PAGE) {
+		if (home->tray == NULL)
+			return;
+		GtkWidget *previous = NULL;
+		for (GtkWidget *child = gtk_widget_get_first_child(home->tray); child != NULL;
+		    child = gtk_widget_get_next_sibling(child)) {
+			struct home_launcher_icon *other = g_object_get_data(G_OBJECT(child), "launcher-icon");
+			if (other != NULL && other->column < icon->column)
+				previous = child;
+		}
+		gtk_widget_add_css_class(icon->button, "home-tray-app");
+		gtk_box_insert_child_after(GTK_BOX(home->tray), icon->button, previous);
+		return;
+	}
+	gtk_widget_remove_css_class(icon->button, "home-tray-app");
+	if (icon->page == 0) {
 		attach_launcher_icon_view(home, icon);
 		return;
 	}
@@ -3058,12 +3101,15 @@ relayout_launcher_icons(struct home *home)
 		if (icon == NULL || icon->button == NULL ||
 		    !GTK_IS_WIDGET(icon->button))
 			continue;
-		if (icon->page >= 0 && icon->page < home->launcher_page_count) {
+		if (icon->page >= HOME_DOCK_PAGE && icon->page < home->launcher_page_count) {
 			attach_launcher_icon_to_page(home, icon);
 			gtk_widget_set_visible(icon->button, TRUE);
 		}
 		g_object_unref(icon->button);
 	}
+	/* A dock icon can enter a shorter landscape cell without a viewport resize.
+	 * Update its request before GTK measures the newly parented grid. */
+	layout_launcher_icons(home);
 	schedule_launcher_icon_layout(home);
 	refresh_launcher_icon_editing(home);
 }
@@ -3104,7 +3150,7 @@ set_launcher_page_animated(struct home *home, int page, bool animate)
 		home->page_strip_x = -(double)page * (double)width;
 		apply_page_drag_offset(home, 0.0);
 		refresh_launcher_page_bar(home);
-		save_home_layout(home);
+		resume_widget_updates(home);
 		return;
 	}
 	home->page_settle_commit = page;
@@ -3130,7 +3176,7 @@ refresh_launcher_page_bar(struct home *home)
 	gtk_widget_set_visible(home->launcher_page_bar, home->layout_editing);
 	if (!home->layout_editing)
 		return;
-	snprintf(label, sizeof(label), "Screen %d of %d",
+	snprintf(label, sizeof(label), "%d/%d",
 	    home->launcher_current_page + 1, home->launcher_page_count);
 	gtk_label_set_text(home->launcher_page_label, label);
 	gtk_widget_set_sensitive(GTK_WIDGET(home->launcher_page_remove),
@@ -3207,11 +3253,8 @@ update_home_widget_density(struct home *home, struct home_grid_item *item)
 	/* Compact when the cell is too small for full chrome (1x1, or only one
 	 * row/column). Keeps analog face out of tiny allocations. */
 	bool compact = item->column_span <= 1 || item->row_span <= 1;
-	int rows = item->page == 0 ? home_cluster_rows(home) : home_rows(home);
+	int rows = home_rows(home);
 	int available = pager_viewport_height(home);
-	if (item->page == 0 && !home->landscape)
-		available -= MAX(1, (available - home_spacing(home)) *
-		    home_strip_rows(home) / home_rows(home)) + home_spacing(home);
 	int slot_height = MAX(1, (available - home_spacing(home) * (rows - 1)) /
 	    rows) * item->row_span + home_spacing(home) * (item->row_span - 1);
 	bool short_card = slot_height < home->config.widget_compact_height_px;
@@ -3248,12 +3291,10 @@ update_home_widget_density(struct home *home, struct home_grid_item *item)
 		gtk_widget_set_visible(home->calendar_compact, !month_fits);
 	} else if (g_str_equal(item->id, "weather") && home->weather_range != NULL) {
 		gtk_widget_set_visible(GTK_WIDGET(home->weather_range), !short_card);
-	} else if (g_str_equal(item->id, "glance") && home->network_context != NULL) {
-		GtkWidget *device = gtk_widget_get_parent(GTK_WIDGET(home->network_context));
-		if (home->glance_title != NULL)
-			gtk_widget_set_visible(home->glance_title, !short_card);
-		if (device != NULL)
-			gtk_widget_set_visible(device, !short_card);
+	} else if (g_str_equal(item->id, "glance") && home->glance_grid != NULL) {
+		int columns = item->column_span >= 4 ? 3 : item->column_span >= 2 ? 2 : 1;
+		bool details = slot_height >= (6 / columns) * 56 + 30;
+		layout_glance(home, columns, details);
 	}
 }
 
@@ -3272,19 +3313,11 @@ map_widget_view_rect(struct home *home, int column, int row, int column_span,
 static void
 attach_launcher_icon_view(struct home *home, struct home_launcher_icon *icon)
 {
-	int view_col = icon->column;
-	int view_row = icon->row;
-	bool in_strip = false;
-	GtkGrid *grid;
-
-	if (!home_rotation_map_cell(home->landscape, home_cols(home),
-	    home_rows(home), home_cluster_rows(home), icon->column, icon->row,
-	    &view_col, &view_row, &in_strip))
+	/* Every page uses the same upright grid, including the former app rows. */
+	if (home->context_grid == NULL)
 		return;
-	grid = in_strip ? home->strip_grid : home->context_grid;
-	if (grid == NULL)
-		return;
-	gtk_grid_attach(grid, icon->button, view_col, view_row, 1, 1);
+	gtk_grid_attach(home->context_grid, icon->button,
+	    icon->column, icon->row, 1, 1);
 }
 
 static bool
@@ -3324,13 +3357,15 @@ apply_home_grid(struct home *home)
 			item->remove_button = NULL;
 			continue;
 		}
-		home_rotation_clamp_widget(home_cols(home), home_cluster_rows(home),
+		home_rotation_clamp_widget(home_cols(home), home_rows(home),
 		    &item->column, &item->row, &item->column_span, &item->row_span);
 		if (widget_id_is_hidden(home, item->id))
 			item->hidden = true;
 		show = !item->hidden;
 		if (item->runtime != NULL)
-			home_widget_runtime_set_visible(item->runtime, show);
+			home_widget_runtime_set_visible(item->runtime, show &&
+			    home->visible && !home_widgets_moving(home) &&
+			    item->page == home->launcher_current_page);
 
 		/*
 		 * Always keep widgets parented in the cluster grid. The old
@@ -3380,10 +3415,6 @@ apply_home_grid(struct home *home)
 		gtk_widget_queue_resize(GTK_WIDGET(home->page_grids[page]));
 		gtk_widget_queue_allocate(GTK_WIDGET(home->page_grids[page]));
 	}
-	if (home->strip_grid != NULL) {
-		gtk_widget_queue_resize(GTK_WIDGET(home->strip_grid));
-		gtk_widget_queue_allocate(GTK_WIDGET(home->strip_grid));
-	}
 }
 
 static void
@@ -3403,6 +3434,10 @@ load_home_layout(struct home *home)
 		struct json_object *saved_columns;
 		struct json_object *saved_rows;
 		struct json_object *saved_pages;
+		struct json_object *saved_dock;
+
+		if (json_object_object_get_ex(root, "dock_initialized", &saved_dock))
+			home->dock_initialized = json_object_get_boolean(saved_dock);
 
 		if (json_object_object_get_ex(root, "grid_columns", &saved_columns) &&
 		    json_object_object_get_ex(root, "grid_rows", &saved_rows) &&
@@ -3453,7 +3488,7 @@ load_home_layout(struct home *home)
 				item->column_span = json_object_get_int(column_span);
 				item->row_span = json_object_get_int(row_span);
 				home_rotation_clamp_widget(home_cols(home),
-				    home_cluster_rows(home), &item->column, &item->row,
+				    home_rows(home), &item->column, &item->row,
 				    &item->column_span, &item->row_span);
 				/* Preserve the old launcher layout while widening its full-width cards. */
 				if (legacy_grid && item->column == 0 && item->column_span == 4 &&
@@ -3516,10 +3551,10 @@ load_home_layout(struct home *home)
 					    &row_value) &&
 					    json_object_is_type(row_value, json_type_int))
 						icon->row = json_object_get_int(row_value);
-					icon->page = CLAMP(icon->page, 0,
+					icon->page = CLAMP(icon->page, HOME_DOCK_PAGE,
 					    home->launcher_page_count - 1);
 					icon->column = CLAMP(icon->column, 0,
-					    home_cols(home) - 1);
+					    (icon->page == HOME_DOCK_PAGE ? 255 : home_cols(home) - 1));
 					icon->row = CLAMP(icon->row, 0,
 					    home_rows(home) - 1);
 					if (home->launcher_icons != NULL)
@@ -3582,7 +3617,8 @@ save_home_layout(struct home *home)
 		previous = json_tokener_parse(previous_contents);
 	if (previous != NULL && json_object_is_type(previous, json_type_object)) {
 		json_object_object_foreach(previous, key, value) {
-			bool managed = strcmp(key, "version") == 0 ||
+			bool managed = strcmp(key, "dock_initialized") == 0 ||
+			    strcmp(key, "version") == 0 ||
 			    strcmp(key, "grid_columns") == 0 ||
 			    strcmp(key, "grid_rows") == 0 ||
 			    strcmp(key, "cluster_rows") == 0 ||
@@ -3599,6 +3635,7 @@ save_home_layout(struct home *home)
 		}
 	}
 	json_object_object_add(root, "version", json_object_new_int(3));
+	json_object_object_add(root, "dock_initialized", json_object_new_boolean(home->dock_initialized));
 	json_object_object_add(root, "grid_columns",
 	    json_object_new_int(home_cols(home)));
 	json_object_object_add(root, "grid_rows",
@@ -3715,15 +3752,8 @@ draw_grid_overlay(GtkDrawingArea *area, cairo_t *cr, int width, int height,
 	cairo_set_source_rgba(cr, home->accent_rgb[0], home->accent_rgb[1],
 	    home->accent_rgb[2], 0.22);
 	cairo_set_line_width(cr, 1.0);
-	if (home->launcher_current_page == 0) {
-		draw_edit_grid(area, cr, home->context_grid, home_cols(home), home_cluster_rows(home));
-		draw_edit_grid(area, cr, home->strip_grid,
-		    home->landscape ? home_strip_rows(home) : home_cols(home),
-		    home->landscape ? home_cols(home) : home_strip_rows(home));
-	} else {
-		draw_edit_grid(area, cr, home->page_grids[home->launcher_current_page],
-		    home_cols(home), home_rows(home));
-	}
+	draw_edit_grid(area, cr, home->page_grids[home->launcher_current_page],
+	    home_cols(home), home_rows(home));
 	cairo_stroke(cr);
 	(void)width;
 	(void)height;
@@ -3878,7 +3908,7 @@ home_widget_target_from_drag(struct home *home, struct home_grid_item *item,
 		x_step = (gtk_widget_get_width(GTK_WIDGET(home->context_grid)) +
 		    gtk_grid_get_column_spacing(home->context_grid)) / (double)home_cols(home);
 		y_step = (gtk_widget_get_height(GTK_WIDGET(home->context_grid)) +
-		    gtk_grid_get_row_spacing(home->context_grid)) / (double)home_cluster_rows(home);
+		    gtk_grid_get_row_spacing(home->context_grid)) / (double)home_rows(home);
 	}
 	/* Gesture deltas belong to the unscaled outer overlay. */
 	if (home->edit_frame != NULL && home->edit_frame->scale > 0.0) {
@@ -4334,7 +4364,7 @@ home_widget_container(struct home *home, struct home_grid_item *item,
 	gtk_widget_set_vexpand(card, TRUE);
 	gtk_widget_set_halign(card, GTK_ALIGN_FILL);
 	gtk_widget_set_valign(card, GTK_ALIGN_FILL);
-	gtk_overlay_set_child(GTK_OVERLAY(container), card);
+	gtk_overlay_set_child(GTK_OVERLAY(container), home_cell_content_new(card));
 	gtk_widget_add_css_class(handle, "home-widget-handle");
 	gtk_widget_set_halign(handle, GTK_ALIGN_END);
 	gtk_widget_set_valign(handle, GTK_ALIGN_END);
@@ -4457,7 +4487,7 @@ ensure_external_widget_runtime(struct home_grid_item *item)
 	gtk_widget_set_vexpand(view, TRUE);
 	gtk_widget_set_halign(view, GTK_ALIGN_FILL);
 	gtk_widget_set_valign(view, GTK_ALIGN_FILL);
-	gtk_overlay_set_child(GTK_OVERLAY(item->container), view);
+	gtk_overlay_set_child(GTK_OVERLAY(item->container), home_cell_content_new(view));
 	item->card = view;
 	return true;
 }
@@ -4481,7 +4511,7 @@ add_external_widgets(struct home *home)
 			.column = 0,
 			.row = 0,
 			.column_span = MIN(desc->default_columns, home_cols(home)),
-			.row_span = MIN(desc->default_rows, home_cluster_rows(home)),
+			.row_span = MIN(desc->default_rows, home_rows(home)),
 			.hidden = !external_widget_is_enabled(home, desc->id) ||
 			    widget_id_is_hidden(home, desc->id),
 		};
@@ -4522,7 +4552,7 @@ widget_picker_add_clicked(GtkButton *button, gpointer data)
 	column_span = CLAMP(item->column_span, home_grid_min_columns(item),
 	    home_cols(home));
 	row_span = CLAMP(item->row_span, home_grid_min_rows(item),
-	    home_cluster_rows(home));
+	    home_rows(home));
 	/* Hidden items are deliberately ignored by normal collision checks. Make
 	 * this one live temporarily so the picker finds a genuinely open slot. */
 	item->page = home->launcher_current_page;
@@ -4645,6 +4675,23 @@ signal_rotation_ready(struct home *home)
 		close(fd);
 }
 
+/* One retained tray: reorient only when the viewport changes, outside the
+ * moving pager. Its artwork stays upright in the compositor's coordinates. */
+static void
+layout_home_tray(struct home *home, bool landscape)
+{
+	if (home->tray == NULL || home->scene_content == NULL)
+		return;
+	gtk_orientable_set_orientation(GTK_ORIENTABLE(home->scene_content),
+	    landscape ? GTK_ORIENTATION_HORIZONTAL : GTK_ORIENTATION_VERTICAL);
+	gtk_orientable_set_orientation(GTK_ORIENTABLE(home->tray),
+	    landscape ? GTK_ORIENTATION_VERTICAL : GTK_ORIENTATION_HORIZONTAL);
+	gtk_widget_set_halign(home->tray, landscape ? GTK_ALIGN_END : GTK_ALIGN_FILL);
+	gtk_widget_set_valign(home->tray, landscape ? GTK_ALIGN_FILL : GTK_ALIGN_END);
+	gtk_widget_set_hexpand(home->tray, !landscape);
+	gtk_widget_set_vexpand(home->tray, landscape);
+}
+
 static gboolean
 update_layout_size(struct home *home, int width, int height)
 {
@@ -4664,20 +4711,7 @@ update_layout_size(struct home *home, int width, int height)
 	home->layout_width = width;
 	home->layout_height = height;
 
-	/*
-	 * V2 responsive layout: cluster (rows 0..cluster_rows-1) and icon strip
-	 * are separate grids. Portrait stacks them; landscape keeps the widget
-	 * composition upright and docks the transposed app strip beside it.
-	 */
-	if (home->context_body != NULL) {
-		gtk_orientable_set_orientation(GTK_ORIENTABLE(home->context_body),
-		    landscape ? GTK_ORIENTATION_HORIZONTAL :
-		    GTK_ORIENTATION_VERTICAL);
-	}
-	if (home->strip_host != NULL) {
-		gtk_widget_set_hexpand(home->strip_host, !landscape);
-		gtk_widget_set_vexpand(home->strip_host, landscape);
-	}
+	/* All cells keep their logical position across orientation changes. */
 	if (home->cluster_host != NULL) {
 		gtk_widget_set_hexpand(home->cluster_host, TRUE);
 		gtk_widget_set_vexpand(home->cluster_host, TRUE);
@@ -4708,7 +4742,7 @@ update_layout_size(struct home *home, int width, int height)
 			    "home-body-landscape");
 	}
 	home->landscape = landscape;
-	seed_strip_grid_anchors(home);
+	layout_home_tray(home, landscape);
 	render_launcher_page(home);
 	sync_page_panel_widths(home);
 	schedule_launcher_icon_layout(home);
@@ -4833,9 +4867,81 @@ refresh_analog_clock(gpointer data)
 {
 	struct home *home = data;
 
-	if (home->analog_clock != NULL)
-		gtk_widget_queue_draw(GTK_WIDGET(home->analog_clock));
+	/* Retained off-screen pages are mapped too. Do not invalidate the strip
+	 * for an invisible clock, or while the finger/settle owns its motion. */
+	if (!home->visible || home->page_drag_active || home->page_drag_owned ||
+	    home->page_settle_source != 0 || home->analog_clock == NULL ||
+	    !gtk_widget_is_visible(GTK_WIDGET(home->analog_clock)))
+		return G_SOURCE_CONTINUE;
+	for (size_t i = 0; i < home->grid_item_count; i++) {
+		struct home_grid_item *item = &home->grid_items[i];
+		if (g_str_equal(item->id, "clock") && !item->hidden &&
+		    item->page == home->launcher_current_page) {
+			gtk_widget_queue_draw(GTK_WIDGET(home->analog_clock));
+			break;
+		}
+	}
 	return G_SOURCE_CONTINUE;
+}
+
+static void
+refresh_calendar(struct home *home, const struct tm *today)
+{
+	GtkWidget *grid = home->calendar_month;
+	struct tm first = *today;
+	char title_text[64];
+	int month_days;
+	int start_column;
+
+	if (grid == NULL || (home->calendar_date_valid &&
+	    home->calendar_date.tm_year == today->tm_year &&
+	    home->calendar_date.tm_mon == today->tm_mon &&
+	    home->calendar_date.tm_mday == today->tm_mday))
+		return;
+	/* Home may start before network time corrects the boot clock. Rebuild
+	 * on local date changes, including backward jumps and midnight. */
+	strftime(title_text, sizeof(title_text), "%B %Y", today);
+	gtk_label_set_text(home->calendar_title, title_text);
+	for (GtkWidget *child = gtk_widget_get_first_child(grid); child != NULL;) {
+		GtkWidget *next = gtk_widget_get_next_sibling(child);
+
+		if (gtk_widget_has_css_class(child, "home-calendar-day"))
+			gtk_grid_remove(GTK_GRID(grid), child);
+		child = next;
+	}
+	first.tm_mday = 1;
+	first.tm_hour = 12;
+	first.tm_isdst = -1;
+	mktime(&first);
+	start_column = (first.tm_wday + 6) % 7;
+	month_days = 31;
+	if (today->tm_mon == 3 || today->tm_mon == 5 || today->tm_mon == 8 ||
+	    today->tm_mon == 10)
+		month_days = 30;
+	else if (today->tm_mon == 1) {
+		const int year = today->tm_year + 1900;
+
+		month_days = (year % 4 == 0 &&
+		    (year % 100 != 0 || year % 400 == 0)) ? 29 : 28;
+	}
+	for (int day = 1; day <= month_days; day++) {
+		char text[4];
+		const int position = start_column + day - 1;
+		GtkWidget *label;
+
+		g_snprintf(text, sizeof(text), "%d", day);
+		label = gtk_label_new(text);
+		gtk_widget_add_css_class(label, "home-calendar-day");
+		gtk_label_set_xalign(GTK_LABEL(label), 0.5);
+		if (day == today->tm_mday)
+			gtk_widget_add_css_class(label, "home-calendar-today");
+		if (home->calendar_event_days & (1u << (day - 1)))
+			gtk_widget_add_css_class(label, "home-calendar-event-day");
+		gtk_grid_attach(GTK_GRID(grid), label, position % 7,
+		    1 + position / 7, 1, 1);
+	}
+	home->calendar_date = *today;
+	home->calendar_date_valid = true;
 }
 
 static gboolean
@@ -4847,7 +4953,14 @@ refresh_clock(gpointer data)
 	char clock_text[32];
 	char date_text[64];
 
+	if (!home->visible || home_widgets_moving(home)) {
+		home->clock_dirty = true;
+		return G_SOURCE_CONTINUE;
+	}
+	home->clock_dirty = false;
 	localtime_r(&now, &local);
+	if (home_widget_on_page(home, "calendar"))
+		refresh_calendar(home, &local);
 	strftime(clock_text, sizeof(clock_text), "%I:%M", &local);
 	if (clock_text[0] == '0')
 		memmove(clock_text, clock_text + 1, strlen(clock_text));
@@ -4867,7 +4980,6 @@ refresh_clock(gpointer data)
 		gtk_label_set_text(home->calendar_compact_date, compact_date);
 		gtk_label_set_text(home->calendar_compact_weekday, compact_weekday);
 	}
-	update_layout(home);
 	return G_SOURCE_CONTINUE;
 }
 
@@ -4898,6 +5010,8 @@ free_status_snapshot(gpointer data)
 	g_free(snapshot->battery_status);
 	g_free(snapshot->network);
 	g_free(snapshot->calls);
+	g_free(snapshot->audio);
+	g_free(snapshot->signal);
 	g_free(snapshot);
 }
 
@@ -4906,10 +5020,11 @@ load_status_snapshot(GTask *task, gpointer source_object,
     gpointer task_data, GCancellable *cancellable)
 {
 	struct status_snapshot *snapshot = g_new0(struct status_snapshot, 1);
-	char *network_argv[] = {"sh", "-c",
-	    "nmcli -t -f TYPE,STATE,CONNECTION device status 2>/dev/null | "
-	    "sed -n 's/^wifi:connected://p' | head -n1", NULL};
-	char *call_argv[] = {"mmcli", "-m", "any", "--voice-list-calls", NULL};
+	char *network_argv[] = {"timeout", "3", "nmcli", "-t", "-f",
+	    "IN-USE,SIGNAL,SSID", "device", "wifi", "list", "--rescan", "no", NULL};
+	char *call_argv[] = {"timeout", "3", "mmcli", "-m", "any", "--voice-list-calls", NULL};
+	char *audio_argv[] = {"timeout", "3", "wpctl", "inspect", "@DEFAULT_AUDIO_SINK@", NULL};
+	char *signal_argv[] = {"timeout", "3", "mmcli", "-m", "any", "--output-keyvalue", NULL};
 
 	(void)source_object;
 	(void)task_data;
@@ -4920,42 +5035,111 @@ load_status_snapshot(GTask *task, gpointer source_object,
 	    "/sys/class/power_supply/qcom-battery/status");
 	snapshot->network = run_capture(network_argv);
 	snapshot->calls = run_capture(call_argv);
+	snapshot->audio = run_capture(audio_argv);
+	snapshot->signal = run_capture(signal_argv);
 	g_task_return_pointer(task, snapshot, free_status_snapshot);
 }
 
+static char *
+status_field(const char *text, const char *key, char separator)
+{
+	char **lines = g_strsplit(text != NULL ? text : "", "\n", -1);
+	char *value = g_strdup("");
+	for (int i = 0; lines[i] != NULL; i++) {
+		char *line = g_strstrip(lines[i]);
+		if (g_str_has_prefix(line, "* "))
+			line += 2;
+		char *split = strchr(line, separator);
+		if (split == NULL)
+			continue;
+		*split = '\0';
+		if (strcmp(g_strstrip(line), key) != 0)
+			continue;
+		g_free(value);
+		value = g_strdup(g_strstrip(split + 1));
+		if (value[0] == '"') {
+			memmove(value, value + 1, strlen(value));
+			char *end = strrchr(value, '"');
+			if (end != NULL) *end = '\0';
+		}
+		break;
+	}
+	g_strfreev(lines);
+	return value;
+}
+
 static void
-apply_status_snapshot(GObject *source_object, GAsyncResult *result,
-    gpointer data)
+set_glance_value(struct home *home, int index, const char *value, const char *detail)
+{
+	if (home->glance_values[index] == NULL)
+		return;
+	gtk_label_set_text(home->glance_values[index], value);
+	gtk_label_set_text(home->glance_details[index], detail);
+	char *accessible = g_strdup_printf("%s, %s", value, detail);
+	gtk_widget_set_tooltip_text(home->glance_cells[index], accessible);
+	g_free(accessible);
+}
+
+static void
+display_status_snapshot(struct home *home, struct status_snapshot *snapshot)
+{
+	char *battery = g_strdup_printf("%s%%", snapshot->capacity);
+	const char *battery_icon = g_str_has_prefix(snapshot->battery_status, "Charging") ?
+	    "battery-good-charging-symbolic" : "battery-good-symbolic";
+	int capacity = atoi(snapshot->capacity);
+	if (!g_str_has_prefix(snapshot->battery_status, "Charging"))
+		battery_icon = capacity < 15 ? "battery-caution-symbolic" :
+		    capacity < 35 ? "battery-low-symbolic" : "battery-good-symbolic";
+	set_glance_value(home, 0, battery, snapshot->battery_status);
+	if (home->glance_icons[0] != NULL)
+		gtk_image_set_from_icon_name(home->glance_icons[0], battery_icon);
+	char **networks = g_strsplit(snapshot->network, "\n", -1);
+	const char *ssid = "Offline";
+	char strength[48] = "Wi-Fi disconnected";
+	for (int i = 0; networks[i] != NULL; i++) {
+		if (!g_str_has_prefix(networks[i], "*:")) continue;
+		char *split = strchr(networks[i] + 2, ':');
+		if (split == NULL) continue;
+		*split = '\0';
+		ssid = split + 1;
+		g_snprintf(strength, sizeof(strength), "Wi-Fi · %d%%", atoi(networks[i] + 2));
+		break;
+	}
+	set_glance_value(home, 1, ssid, strength);
+	char *audio = status_field(snapshot->audio, "node.description", '=');
+	const char *audio_short = audio[0] == '\0' ? "No output" : audio;
+	if (g_str_has_prefix(audio, "Built-in Audio")) audio_short = "Phone speaker";
+	set_glance_value(home, 2, audio_short, audio[0] != '\0' ? audio : "Audio unavailable");
+	char *signal = status_field(snapshot->signal, "modem.generic.signal-quality.value", ':');
+	char *tech = status_field(snapshot->signal, "modem.generic.access-technologies.value[1]", ':');
+	char *carrier = status_field(snapshot->signal, "modem.3gpp.operator-name", ':');
+	char *upper = g_ascii_strup(tech, -1);
+	char *cell = signal[0] != '\0' ? g_strdup_printf("%s · %s%%", upper, signal) : g_strdup("No signal");
+	set_glance_value(home, 3, cell, carrier[0] != '\0' ? carrier : "Cellular");
+	char *summary = g_strdup_printf("%s · %s", ssid, battery);
+	gtk_label_set_text(home->system, summary);
+	gtk_widget_set_visible(home->call_card, strstr(snapshot->calls, "/Call/") != NULL);
+	g_free(summary); g_free(cell); g_free(upper); g_free(carrier); g_free(tech);
+	g_free(signal); g_free(audio); g_free(battery); g_strfreev(networks);
+	free_status_snapshot(snapshot);
+}
+
+static void
+apply_status_snapshot(GObject *source_object, GAsyncResult *result, gpointer data)
 {
 	struct home *home = data;
-	struct status_snapshot *snapshot;
-	char *trimmed;
-	char *summary;
-	char *network_chip;
-	char *battery_chip;
+	struct status_snapshot *snapshot = g_task_propagate_pointer(G_TASK(result), NULL);
 
 	(void)source_object;
 	home->status_refresh_pending = false;
-	snapshot = g_task_propagate_pointer(G_TASK(result), NULL);
 	if (snapshot == NULL)
 		return;
-	trimmed = g_strstrip(snapshot->network);
-	summary = g_strdup_printf("%s  ·  %s%%",
-	    trimmed[0] != '\0' ? trimmed : "Offline", snapshot->capacity);
-	network_chip = g_strdup(
-	    trimmed[0] != '\0' ? trimmed : "Offline");
-	battery_chip = g_strdup_printf("%s%% · %s",
-	    snapshot->capacity, snapshot->battery_status);
-
-	gtk_label_set_text(home->system, summary);
-	gtk_label_set_text(home->network_context, network_chip);
-	gtk_label_set_text(home->battery_context, battery_chip);
-	gtk_widget_set_visible(home->call_card,
-	    strstr(snapshot->calls, "/Call/") != NULL);
-	g_free(summary);
-	g_free(network_chip);
-	g_free(battery_chip);
-	free_status_snapshot(snapshot);
+	free_status_snapshot(home->pending_status);
+	home->pending_status = NULL;
+	if (!home->visible || home_widgets_moving(home))
+		home->pending_status = snapshot;
+	else
+		display_status_snapshot(home, snapshot);
 }
 
 static gboolean
@@ -4964,7 +5148,7 @@ refresh_status(gpointer data)
 	struct home *home = data;
 	GTask *task;
 
-	if (home->status_refresh_pending)
+	if (!home->visible || home_widgets_moving(home) || home->status_refresh_pending)
 		return G_SOURCE_CONTINUE;
 	home->status_refresh_pending = true;
 	task = g_task_new(NULL, NULL, apply_status_snapshot, home);
@@ -5086,7 +5270,8 @@ refresh_activity(gpointer data)
 	unsigned long long memory_available;
 	long online_cores;
 
-	if (!home->visible)
+	if (!home->visible || home_widgets_moving(home) ||
+	    !home_widget_on_page(home, "glance"))
 		return G_SOURCE_CONTINUE;
 	online_cores = sysconf(_SC_NPROCESSORS_ONLN);
 	if (read_cpu_times(&aggregate)) {
@@ -5102,37 +5287,31 @@ refresh_activity(gpointer data)
 			    (double)(total_delta - idle_delta) / (double)total_delta :
 			    0.0;
 
-			text = g_strdup_printf("CPU %.0f%%  ·  %ld %s", usage * 100.0,
-			    online_cores > 0 ? online_cores : 0,
-			    online_cores == 1 ? "core" : "cores");
+			text = g_strdup_printf("%.0f%%", usage * 100.0);
 		} else {
-			text = g_strdup_printf("CPU sampling  ·  %ld %s",
-			    online_cores > 0 ? online_cores : 0,
-			    online_cores == 1 ? "core" : "cores");
+			text = g_strdup("Sampling…");
 		}
-		gtk_label_set_text(home->cpu_context, text);
+		char detail[64];
+		g_snprintf(detail, sizeof(detail), "CPU · %ld cores", online_cores);
+		set_glance_value(home, 5, text, detail);
 		g_free(text);
 		home->previous_cpu_total = aggregate.total;
 		home->previous_cpu_idle = aggregate.idle;
 		home->cpu_sample_ready = true;
 	} else {
-		gtk_label_set_text(home->cpu_context, "CPU unavailable");
+		set_glance_value(home, 5, "Unavailable", "CPU");
 		home->cpu_sample_ready = false;
 	}
 	if (read_memory_kib(&memory_total, &memory_used, &memory_available)) {
 		double fraction = (double)memory_used / (double)memory_total;
-		char *text = g_strdup_printf(
-		    "RAM %.2f / %.1f GiB  ·  %.1f avail",
-		    (double)memory_used / (1024.0 * 1024.0),
-		    (double)memory_total / (1024.0 * 1024.0),
-		    (double)memory_available / (1024.0 * 1024.0));
-
-		gtk_label_set_text(home->memory_context, text);
-		gtk_progress_bar_set_fraction(home->memory_meter, fraction);
+		char *text = g_strdup_printf("%.1f GB", (double)memory_used / (1024.0 * 1024.0));
+		char *detail = g_strdup_printf("RAM · %.0f%% of %.1f GB", fraction * 100.0,
+		    (double)memory_total / (1024.0 * 1024.0));
+		set_glance_value(home, 4, text, detail);
+		g_free(detail);
 		g_free(text);
 	} else {
-		gtk_label_set_text(home->memory_context, "RAM unavailable");
-		gtk_progress_bar_set_fraction(home->memory_meter, 0.0);
+		set_glance_value(home, 4, "Unavailable", "RAM");
 	}
 	return G_SOURCE_CONTINUE;
 }
@@ -5243,6 +5422,7 @@ set_visible(struct home *home, bool visible)
 		unlink(home->state_path);
 		gtk_widget_set_visible(GTK_WIDGET(home->window), FALSE);
 	}
+	resume_widget_updates(home);
 }
 
 static void
@@ -5287,13 +5467,11 @@ quick_action(GtkButton *button, gpointer data)
 	char *drawer = g_build_filename(scripts, "ctlstdrawer", NULL);
 	char *app_run = g_build_filename(scripts, "app-run", NULL);
 	char *terminal = g_build_filename(scripts, "terminal-shell", NULL);
-	char *foot_config = ctlst_config_path("foot.ini");
-	char *foot_option = g_strdup_printf("--config=%s", foot_config);
 	char *apps_argv[] = {drawer, "show", NULL};
-	char *phone_argv[] = {app_run, "desktop", "dev.ctlst.Dialer.desktop", NULL};
-	char *messages_argv[] = {app_run, "desktop", "dev.ctlst.Messages.desktop", NULL};
-	char *terminal_argv[] = {app_run, "command", "foot", "foot",
-	    foot_option, terminal, NULL};
+	char *phone_argv[] = {app_run, "role", "phone", NULL};
+	char *messages_argv[] = {app_run, "role", "messages", NULL};
+	char *terminal_argv[] = {app_run, "command", "dev.ctlst.Terminal",
+	    terminal, NULL};
 
 	(void)data;
 	if (g_strcmp0(action, "apps") == 0)
@@ -5309,8 +5487,6 @@ quick_action(GtkButton *button, gpointer data)
 		run_detached(messages_argv);
 	else if (g_strcmp0(action, "terminal") == 0)
 		run_detached(terminal_argv);
-	g_free(foot_option);
-	g_free(foot_config);
 	g_free(terminal);
 	g_free(app_run);
 	g_free(drawer);
@@ -5368,8 +5544,15 @@ refresh_weather(gpointer data)
 	const char *icon_name = "weather-overcast";
 	const bool demo = home_demo_enabled();
 
+	refresh_calendar_events(home);
 	if (home->weather_temperature == NULL)
 		return G_SOURCE_CONTINUE;
+	if (!home->visible || home_widgets_moving(home) ||
+	    !home_widget_on_page(home, "weather")) {
+		home->weather_dirty = true;
+		return G_SOURCE_CONTINUE;
+	}
+	home->weather_dirty = false;
 	if (demo) {
 		gtk_image_set_from_icon_name(GTK_IMAGE(home->weather_icon),
 		    "weather-few-clouds");
@@ -5422,8 +5605,9 @@ refresh_weather(gpointer data)
 			    json_object_get_string(value), condition);
 			condition = condition_buf;
 		}
-		gtk_image_set_from_icon_name(GTK_IMAGE(home->weather_icon),
-		    icon_name);
+		if (g_strcmp0(gtk_image_get_icon_name(GTK_IMAGE(home->weather_icon)),
+		    icon_name) != 0)
+			gtk_image_set_from_icon_name(GTK_IMAGE(home->weather_icon), icon_name);
 		gtk_label_set_text(home->weather_condition, condition);
 		gtk_label_set_text(home->weather_range, range_text);
 		{
@@ -5445,6 +5629,91 @@ refresh_weather(gpointer data)
 	if (root != NULL)
 		json_object_put(root);
 	return G_SOURCE_CONTINUE;
+}
+
+static void
+load_calendar_events(GTask *task, gpointer source, gpointer task_data, GCancellable *cancel)
+{
+	(void)source; (void)task_data; (void)cancel;
+	char *argv[] = {"timeout", "12", "ctlst-calendar-summary", NULL};
+	g_task_return_pointer(task, run_capture(argv), g_free);
+}
+
+static void
+display_calendar_events(struct home *home)
+{
+	if (home->pending_calendar == NULL || home->calendar_month == NULL ||
+	    !home->visible || home_widgets_moving(home)) return;
+	struct json_object *root = json_tokener_parse(home->pending_calendar), *days = NULL, *value;
+	g_clear_pointer(&home->pending_calendar, g_free);
+	if (root != NULL) {
+		json_object_object_get_ex(root, "days", &days);
+	}
+	unsigned int event_days = 0;
+	time_t now = time(NULL);
+	struct tm today;
+	localtime_r(&now, &today);
+	bool current_month = root != NULL && json_object_object_get_ex(root, "month", &value) &&
+	    json_object_get_int(value) == today.tm_mon + 1;
+	current_month = current_month && json_object_object_get_ex(root, "year", &value) &&
+	    json_object_get_int(value) == today.tm_year + 1900;
+	if (current_month && days != NULL && json_object_is_type(days, json_type_array)) {
+		for (size_t i = 0; i < json_object_array_length(days); i++) {
+			int day = json_object_get_int(json_object_array_get_idx(days, i));
+			if (day >= 1 && day <= 31) event_days |= 1u << (day - 1);
+		}
+	}
+	if (event_days != home->calendar_event_days) {
+		home->calendar_event_days = event_days;
+		home->calendar_date_valid = false;
+		refresh_clock(home);
+	}
+	if (root != NULL) json_object_put(root);
+}
+
+static void
+calendar_events_ready(GObject *source, GAsyncResult *result, gpointer data)
+{
+	struct home *home = data;
+	(void)source;
+	home->calendar_fetch_pending = false;
+	g_free(home->pending_calendar);
+	home->pending_calendar = g_task_propagate_pointer(G_TASK(result), NULL);
+	display_calendar_events(home);
+}
+
+static void
+refresh_calendar_events(struct home *home)
+{
+	gint64 now = g_get_monotonic_time();
+	if (!home->visible || home_widgets_moving(home) ||
+	    !home_widget_on_page(home, "calendar") || home->calendar_fetch_pending ||
+	    (home->calendar_fetched_us != 0 && now - home->calendar_fetched_us < 60 * G_USEC_PER_SEC)) return;
+	home->calendar_fetched_us = now;
+	home->calendar_fetch_pending = true;
+	GTask *task = g_task_new(NULL, NULL, calendar_events_ready, home);
+	g_task_run_in_thread(task, load_calendar_events);
+	g_object_unref(task);
+}
+
+static void
+resume_widget_updates(struct home *home)
+{
+	sync_widget_activity(home);
+	if (!home->visible || home_widgets_moving(home))
+		return;
+	/* One catch-up at rest; no extra polling and no layout rebuild. The
+	 * clock also catches dates changed while its page was off-screen. */
+	refresh_clock(home);
+	display_calendar_events(home);
+	refresh_calendar_events(home);
+	if (home->weather_dirty)
+		refresh_weather(home);
+	if (home->pending_status != NULL) {
+		struct status_snapshot *snapshot = home->pending_status;
+		home->pending_status = NULL;
+		display_status_snapshot(home, snapshot);
+	}
 }
 
 static GtkWidget *
@@ -5493,23 +5762,17 @@ calendar_card(struct home *home)
 	static const char *weekday_names[] = {"M", "T", "W", "T", "F", "S", "S"};
 	time_t now = time(NULL);
 	struct tm today;
-	struct tm first;
-	char title_text[64];
 	GtkWidget *card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 7);
 	GtkWidget *title;
 	GtkWidget *grid = gtk_grid_new();
 	GtkWidget *compact;
 	GtkWidget *compact_date;
 	GtkWidget *compact_weekday;
-	int month_days;
-	int start_column;
 
 	localtime_r(&now, &today);
-	first = today;
-	first.tm_mday = 1;
-	mktime(&first);
-	strftime(title_text, sizeof(title_text), "%B %Y", &today);
-	title = gtk_label_new(title_text);
+	title = gtk_label_new("");
+	home->calendar_title = GTK_LABEL(title);
+	home->calendar_date_valid = false;
 	gtk_label_set_xalign(GTK_LABEL(title), 0);
 	gtk_widget_add_css_class(card, "home-calendar-card");
 	gtk_widget_add_css_class(title, "home-calendar-title");
@@ -5519,8 +5782,10 @@ calendar_card(struct home *home)
 	home->calendar_month = grid;
 	gtk_widget_add_css_class(grid, "home-calendar-month");
 	gtk_widget_set_hexpand(grid, TRUE);
+	gtk_widget_set_vexpand(grid, TRUE);
 	gtk_widget_set_halign(grid, GTK_ALIGN_FILL);
 	gtk_grid_set_column_homogeneous(GTK_GRID(grid), TRUE);
+	gtk_grid_set_row_homogeneous(GTK_GRID(grid), TRUE);
 	gtk_grid_set_row_spacing(GTK_GRID(grid), 2);
 	for (int column = 0; column < 7; column++) {
 		GtkWidget *label = gtk_label_new(weekday_names[column]);
@@ -5529,31 +5794,7 @@ calendar_card(struct home *home)
 		gtk_label_set_xalign(GTK_LABEL(label), 0.5);
 		gtk_grid_attach(GTK_GRID(grid), label, column, 0, 1, 1);
 	}
-	start_column = (first.tm_wday + 6) % 7;
-	month_days = 31;
-	if (today.tm_mon == 3 || today.tm_mon == 5 || today.tm_mon == 8 ||
-	    today.tm_mon == 10)
-		month_days = 30;
-	else if (today.tm_mon == 1) {
-		const int year = today.tm_year + 1900;
-
-		month_days = (year % 4 == 0 &&
-		    (year % 100 != 0 || year % 400 == 0)) ? 29 : 28;
-	}
-	for (int day = 1; day <= month_days; day++) {
-		char text[4];
-		const int position = start_column + day - 1;
-		GtkWidget *label;
-
-		g_snprintf(text, sizeof(text), "%d", day);
-		label = gtk_label_new(text);
-		gtk_widget_add_css_class(label, "home-calendar-day");
-		gtk_label_set_xalign(GTK_LABEL(label), 0.5);
-		if (day == today.tm_mday)
-			gtk_widget_add_css_class(label, "home-calendar-today");
-		gtk_grid_attach(GTK_GRID(grid), label, position % 7,
-		    1 + position / 7, 1, 1);
-	}
+	refresh_calendar(home, &today);
 	gtk_box_append(GTK_BOX(card), grid);
 	compact = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
 	compact_date = gtk_label_new("");
@@ -5569,6 +5810,7 @@ calendar_card(struct home *home)
 	home_clip_text(home->calendar_compact_weekday);
 	gtk_box_append(GTK_BOX(compact), compact_date);
 	gtk_box_append(GTK_BOX(compact), compact_weekday);
+	gtk_widget_set_vexpand(compact, TRUE);
 	gtk_widget_set_valign(compact, GTK_ALIGN_CENTER);
 	gtk_widget_set_visible(compact, FALSE);
 	gtk_box_append(GTK_BOX(card), compact);
@@ -5617,57 +5859,68 @@ analog_clock_card(struct home *home)
 	return card;
 }
 
+static void
+layout_glance(struct home *home, int columns, bool details)
+{
+	if (home->glance_grid == NULL) return;
+	if (home->glance_columns != columns) {
+		for (int i = 0; i < 6; i++) {
+			GtkWidget *cell = home->glance_cells[i];
+			g_object_ref(cell);
+			if (gtk_widget_get_parent(cell) != NULL)
+				gtk_grid_remove(GTK_GRID(home->glance_grid), cell);
+			gtk_grid_attach(GTK_GRID(home->glance_grid), cell, i % columns, i / columns, 1, 1);
+			g_object_unref(cell);
+		}
+		home->glance_columns = columns;
+	}
+	for (int i = 0; i < 6; i++)
+		gtk_widget_set_visible(GTK_WIDGET(home->glance_details[i]), details);
+}
+
 static GtkWidget *
 glance_card(struct home *home)
 {
-	const bool demo = home_demo_enabled();
-	GtkWidget *card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
-	GtkWidget *title = gtk_label_new("At a Glance");
-	GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
-	GtkWidget *dot = gtk_label_new("◇");
-	GtkWidget *copy = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-	GtkWidget *event = gtk_label_new(demo ? "Team sync" :
-	    "Calendar not connected");
-	GtkWidget *when = gtk_label_new(demo ? "10:00 AM" :
-	    "Event feed is not configured");
-	GtkWidget *device = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-
-	home->glance_title = title;
-	home->network_context = GTK_LABEL(gtk_label_new("Offline"));
-	home->battery_context = GTK_LABEL(gtk_label_new("--%"));
+	static const char *icons[] = {"battery-good-symbolic", "network-wireless-signal-excellent-symbolic",
+	    "audio-speakers-symbolic", "network-cellular-signal-good-symbolic",
+	    "ctlst-memory-symbolic", "ctlst-cpu-symbolic"};
+	static const char *names[] = {"Battery", "Wi-Fi", "Audio output", "Cellular", "Memory", "CPU"};
+	GtkWidget *card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
 	gtk_widget_add_css_class(card, "home-glance-card");
-	gtk_widget_add_css_class(title, "home-glance-title");
-	gtk_widget_add_css_class(dot, "home-glance-dot");
-	gtk_widget_add_css_class(event, "home-glance-event");
-	gtk_widget_add_css_class(when, "home-glance-meta");
-	gtk_widget_add_css_class(GTK_WIDGET(home->network_context),
-	    "home-glance-meta");
-	gtk_widget_add_css_class(GTK_WIDGET(home->battery_context),
-	    "home-glance-meta");
-	gtk_label_set_xalign(GTK_LABEL(title), 0);
-	gtk_label_set_xalign(GTK_LABEL(event), 0);
-	gtk_label_set_xalign(GTK_LABEL(when), 0);
-	home_clip_text(GTK_LABEL(title));
-	home_clip_text(GTK_LABEL(event));
-	home_clip_text(GTK_LABEL(when));
-	home_clip_text(home->network_context);
-	home_clip_text(home->battery_context);
-	gtk_widget_set_valign(dot, GTK_ALIGN_CENTER);
-	gtk_widget_set_halign(dot, GTK_ALIGN_CENTER);
-	home_clip_box(copy);
-	gtk_widget_set_hexpand(copy, TRUE);
-	gtk_box_append(GTK_BOX(copy), event);
-	gtk_box_append(GTK_BOX(copy), when);
-	gtk_box_append(GTK_BOX(row), dot);
-	gtk_box_append(GTK_BOX(row), copy);
-	home_clip_box(row);
-	gtk_box_append(GTK_BOX(device), GTK_WIDGET(home->network_context));
-	gtk_box_append(GTK_BOX(device), GTK_WIDGET(home->battery_context));
-	home_clip_box(device);
+	home->glance_grid = gtk_grid_new();
+	gtk_grid_set_column_homogeneous(GTK_GRID(home->glance_grid), TRUE);
+	gtk_grid_set_row_homogeneous(GTK_GRID(home->glance_grid), TRUE);
+	gtk_grid_set_column_spacing(GTK_GRID(home->glance_grid), 10);
+	gtk_grid_set_row_spacing(GTK_GRID(home->glance_grid), 8);
+	gtk_widget_set_hexpand(home->glance_grid, TRUE);
+	gtk_widget_set_vexpand(home->glance_grid, TRUE);
+	for (int i = 0; i < 6; i++) {
+		GtkWidget *cell = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 7);
+		GtkWidget *copy = gtk_box_new(GTK_ORIENTATION_VERTICAL, 1);
+		home->glance_cells[i] = cell;
+		home->glance_icons[i] = GTK_IMAGE(gtk_image_new_from_icon_name(icons[i]));
+		gtk_widget_add_css_class(GTK_WIDGET(home->glance_icons[i]), "home-glance-icon");
+		gtk_widget_set_valign(GTK_WIDGET(home->glance_icons[i]), GTK_ALIGN_CENTER);
+		home->glance_values[i] = GTK_LABEL(gtk_label_new("—"));
+		home->glance_details[i] = GTK_LABEL(gtk_label_new(names[i]));
+		gtk_widget_add_css_class(GTK_WIDGET(home->glance_values[i]), "home-glance-value");
+		gtk_widget_add_css_class(GTK_WIDGET(home->glance_details[i]), "home-glance-meta");
+		gtk_label_set_xalign(home->glance_values[i], 0);
+		gtk_label_set_xalign(home->glance_details[i], 0);
+		home_clip_text(home->glance_values[i]); home_clip_text(home->glance_details[i]);
+		gtk_widget_set_hexpand(copy, TRUE);
+		gtk_widget_set_valign(copy, GTK_ALIGN_CENTER);
+		gtk_box_append(GTK_BOX(copy), GTK_WIDGET(home->glance_values[i]));
+		gtk_box_append(GTK_BOX(copy), GTK_WIDGET(home->glance_details[i]));
+		gtk_box_append(GTK_BOX(cell), GTK_WIDGET(home->glance_icons[i]));
+		gtk_box_append(GTK_BOX(cell), copy);
+		home_clip_box(cell);
+	}
+	home->battery_context = home->glance_values[0];
+	home->network_context = home->glance_values[1];
+	layout_glance(home, 3, false);
+	gtk_box_append(GTK_BOX(card), home->glance_grid);
 	home_clip_box(card);
-	gtk_box_append(GTK_BOX(card), title);
-	gtk_box_append(GTK_BOX(card), row);
-	gtk_box_append(GTK_BOX(card), device);
 	return card;
 }
 
@@ -5897,7 +6150,7 @@ layout_outside_released(GtkGestureClick *gesture, int presses, double x, double 
 
 	(void)gesture;
 	(void)presses;
-	if (!home->layout_editing)
+	if (!home->layout_editing || home->page_drag_owned || home->page_release_suppress)
 		return;
 	target = gtk_widget_pick(home->root, x, y, GTK_PICK_DEFAULT);
 	for (size_t i = 0; i < home->grid_item_count; i++) {
@@ -5946,6 +6199,13 @@ remove_favorite(struct home *home, const char *favorite)
 
 	g_free(output);
 	g_free(preferences);
+	for (guint i = 0; home->launcher_icons && i < home->launcher_icons->len; i++) {
+		struct home_launcher_icon *icon = g_ptr_array_index(home->launcher_icons, i);
+		if (g_strcmp0(icon->desktop_id, favorite) == 0) {
+			g_ptr_array_remove_index(home->launcher_icons, i);
+			break;
+		}
+	}
 	refresh_launcher_icons(home);
 	save_home_layout(home);
 }
@@ -5969,8 +6229,10 @@ launcher_point_is_remove(struct home *home, double ox, double oy)
 
 	if (home->context_overlay == NULL)
 		return false;
-	/* The edit toolbar is not a removal target. */
-	if (point_in_edit_controls(home, ox, oy))
+	/* The toolbar and favorites tray are never removal targets, including
+	 * the top of the vertical tray in landscape. */
+	if (point_in_edit_controls(home, ox, oy) ||
+	    dock_drop_position(home, ox, oy, NULL))
 		return false;
 	height = gtk_widget_get_height(GTK_WIDGET(home->context_overlay));
 	width = gtk_widget_get_width(GTK_WIDGET(home->context_overlay));
@@ -6125,6 +6387,8 @@ place_launcher_icon_from_drop(struct home *home, const char *desktop_id,
 	icon = launcher_icon_for_desktop_id(home, desktop_id);
 	if (icon == NULL)
 		return;
+	if (icon->page == HOME_DOCK_PAGE)
+		(void)preferences_add_favorite(desktop_id);
 	page = CLAMP(page, 0, home->launcher_page_count - 1);
 	icon->page = page;
 	if (!launcher_cell_occupied_except(home, page, column, row, icon, NULL)) {
@@ -6233,11 +6497,111 @@ favorite_icon_for_id(const char *favorite)
 		    ? "dev.ctlst.Apps" : "view-app-grid-symbolic");
 	}
 	app = find_favorite_app(favorite);
-	if (app == NULL)
-		return g_themed_icon_new("application-x-executable-symbolic");
-	icon = g_object_ref(g_app_info_get_icon(app));
+	if (app == NULL) {
+		const char *fallback = g_str_equal(favorite, "dev.ctlst.Dialer.desktop") ? "call-start-symbolic" :
+		    g_str_equal(favorite, "dev.ctlst.Messages.desktop") ? "mail-message-new-symbolic" :
+		    g_str_equal(favorite, "dev.ctlst.Camera.desktop") ? "camera-photo-symbolic" :
+		    g_str_equal(favorite, "chromium.desktop") ? "web-browser-symbolic" : "application-x-executable-symbolic";
+		return g_themed_icon_new(fallback);
+	}
+	icon = g_app_info_get_icon(app) ? g_object_ref(g_app_info_get_icon(app)) :
+	    g_themed_icon_new("application-x-executable-symbolic");
 	g_object_unref(app);
 	return icon;
+}
+
+/* One persistent launcher tray shared by all Home pages. An empty dock
+ * retains its drop target so the last app can be moved out and back in. */
+static GtkWidget *
+make_home_tray(struct home *home)
+{
+	(void)home;
+	GtkWidget *tray = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+	gtk_widget_add_css_class(tray, "home-tray");
+	gtk_box_set_homogeneous(GTK_BOX(tray), TRUE);
+	gtk_widget_set_valign(tray, GTK_ALIGN_END);
+	gtk_widget_set_vexpand(tray, FALSE);
+	return tray;
+}
+
+static void
+seed_default_dock(struct home *home)
+{
+	if (home->dock_initialized)
+		return;
+	GAppInfo *browser = g_app_info_get_default_for_uri_scheme("https");
+	const char *apps[] = {browser ? g_app_info_get_id(browser) : NULL};
+	for (size_t i = 0; i < G_N_ELEMENTS(apps); i++) {
+		if (apps[i] == NULL) continue;
+		struct home_launcher_icon *icon = launcher_icon_for_desktop_id(home, apps[i]);
+		if (icon == NULL) {
+			icon = g_new0(struct home_launcher_icon, 1);
+			icon->home = home;
+			icon->desktop_id = g_strdup(apps[i]);
+			g_ptr_array_add(home->launcher_icons, icon);
+		}
+		icon->page = HOME_DOCK_PAGE;
+		icon->column = (int)i;
+		icon->row = 0;
+	}
+	home->dock_initialized = true;
+	g_clear_object(&browser);
+}
+
+static bool
+dock_drop_position(struct home *home, double x, double y, int *position)
+{
+	graphene_point_t in = GRAPHENE_POINT_INIT(x, y), out;
+	if (home->tray == NULL || home->context_overlay == NULL ||
+	    !gtk_widget_compute_point(GTK_WIDGET(home->context_overlay), home->tray, &in, &out))
+		return false;
+	int width = gtk_widget_get_width(home->tray), height = gtk_widget_get_height(home->tray);
+	if (out.x < 0 || out.y < 0 || out.x >= width || out.y >= height)
+		return false;
+	/* The homogeneous dock has equal slots. Derive insertion from its stable
+	 * bounds, not child transforms that are stale between drag reattachments. */
+	int others = 0;
+	for (guint i = 0; home->launcher_icons && i < home->launcher_icons->len; i++) {
+		struct home_launcher_icon *icon = g_ptr_array_index(home->launcher_icons, i);
+		if (icon != home->active_launcher_drag && icon->page == HOME_DOCK_PAGE)
+			others++;
+	}
+	if (position != NULL) {
+		bool vertical = gtk_orientable_get_orientation(GTK_ORIENTABLE(home->tray)) == GTK_ORIENTATION_VERTICAL;
+		double along = vertical ? out.y : out.x;
+		int extent = vertical ? height : width;
+		*position = CLAMP((int)(along * (others + 1) / extent), 0, others);
+	}
+	return true;
+}
+
+static gint
+dock_icon_compare(gconstpointer a, gconstpointer b)
+{
+	const struct home_launcher_icon *left = *(struct home_launcher_icon *const *)a;
+	const struct home_launcher_icon *right = *(struct home_launcher_icon *const *)b;
+	return (left->column > right->column) - (left->column < right->column);
+}
+
+static void
+place_icon_in_dock(struct home *home, struct home_launcher_icon *icon, int position)
+{
+	GPtrArray *dock = g_ptr_array_new();
+	for (guint i = 0; i < home->launcher_icons->len; i++) {
+		struct home_launcher_icon *other = g_ptr_array_index(home->launcher_icons, i);
+		if (other != icon && other->page == HOME_DOCK_PAGE)
+			g_ptr_array_add(dock, other);
+	}
+	g_ptr_array_sort(dock, dock_icon_compare);
+	position = CLAMP(position, 0, (int)dock->len);
+	for (guint i = 0; i < dock->len; i++) {
+		struct home_launcher_icon *other = g_ptr_array_index(dock, i);
+		other->column = (int)i + ((int)i >= position);
+	}
+	icon->page = HOME_DOCK_PAGE;
+	icon->column = position;
+	icon->row = 0;
+	g_ptr_array_unref(dock);
 }
 
 static struct home_launcher_icon *
@@ -6582,9 +6946,8 @@ overlay_to_grid_point(struct home *home, double ox, double oy, double *gx,
 	if (home->context_overlay == NULL)
 		return false;
 	/*
-	 * Map into the visible page panel. Page 0's panel is context_body
-	 * (cluster + strip); later pages are full 5×7 icon grids. Mapping to
-	 * context_grid alone broke drops on page ≥ 1.
+	 * Map into the visible full-page grid in either orientation. Mapping to
+	 * context_grid alone would break drops on later pages.
 	 */
 	page = home->launcher_current_page;
 	if (page < 0 || page >= home->page_panel_count)
@@ -6600,35 +6963,7 @@ overlay_to_grid_point(struct home *home, double ox, double oy, double *gx,
 		return false;
 	*gx = out.x;
 	*gy = out.y;
-	if (page == 0) {
-		/* Convert the displayed cluster/side strip to portrait-logical space.
-		 * This also handles fractional edit zoom through compute_point. */
-		double cw, ch;
-		if (!grid_cell_size(home, &cw, &ch))
-			return false;
-		for (int strip = 0; strip <= 1; strip++) {
-			GtkGrid *grid = strip ? home->strip_grid : home->context_grid;
-			int cols = strip && home->landscape ? home_strip_rows(home) : home_cols(home);
-			int rows = strip ? (home->landscape ? home_cols(home) : home_strip_rows(home)) : home_cluster_rows(home);
-			graphene_point_t local;
-			if (!gtk_widget_compute_point(GTK_WIDGET(home->context_overlay),
-			    GTK_WIDGET(grid), &in, &local))
-				continue;
-			int w = gtk_widget_get_width(GTK_WIDGET(grid));
-			int h = gtk_widget_get_height(GTK_WIDGET(grid));
-			if (local.x < 0 || local.y < 0 || local.x >= w || local.y >= h)
-				continue;
-			double vx = local.x / ((w + gtk_grid_get_column_spacing(grid)) / (double)cols);
-			double vy = local.y / ((h + gtk_grid_get_row_spacing(grid)) / (double)rows);
-			*gx = (strip && home->landscape ? vy : vx) *
-			    (cw + gtk_grid_get_column_spacing(home->context_grid));
-			*gy = ((strip ? home_cluster_rows(home) : 0) +
-			    (strip && home->landscape ? vx : vy)) *
-			    (ch + gtk_grid_get_row_spacing(home->context_grid));
-			return true;
-		}
-		return false;
-	}
+
 	return true;
 }
 
@@ -6695,7 +7030,7 @@ home_launcher_icon_at(struct home *home, double x, double y)
 			    g_ptr_array_index(home->launcher_icons, i);
 
 			if (icon == NULL || icon->button == NULL ||
-			    icon->page != home->launcher_current_page)
+			    (icon->page != HOME_DOCK_PAGE && icon->page != home->launcher_current_page))
 				continue;
 			if (ancestor == icon->button)
 				return icon;
@@ -6732,8 +7067,9 @@ launcher_remove_badge_at(struct home *home, double x, double y)
 		int width;
 		int height;
 
-		if (icon == NULL || icon->button == NULL ||
-		    icon->page != home->launcher_current_page)
+		/* Every retained page shares the strip height. An off-screen
+		 * portrait icon must not keep the entire landscape grid tall. */
+		if (icon == NULL || icon->button == NULL)
 			continue;
 		badge = g_object_get_data(G_OBJECT(icon->button),
 		    "launcher-remove-badge");
@@ -6770,6 +7106,7 @@ start_launcher_icon_drag(struct home *home, struct home_launcher_icon *icon)
 	if (home->active_launcher_drag != icon)
 		g_object_ref(icon->button);
 	home->active_launcher_drag = icon;
+	home->launcher_drag_from_dock = icon->page == HOME_DOCK_PAGE;
 	home->launcher_drag_start_column = icon->column;
 	home->launcher_drag_start_row = icon->row;
 	home->launcher_remove_armed = false;
@@ -6815,6 +7152,32 @@ update_launcher_icon_drag(struct home *home, double offset_x, double offset_y)
 	/* While armed for remove, leave the icon on its last valid cell. */
 	if (home->launcher_remove_armed)
 		return;
+	int dock_position;
+	double ox = home->launcher_press_x + offset_x;
+	double oy = home->launcher_press_y + offset_y;
+	if (dock_drop_position(home, ox, oy, &dock_position)) {
+		cancel_launcher_push_dwell(home);
+		cancel_page_edge_dwell(home);
+		restore_drag_layout_data(home);
+		place_icon_in_dock(home, icon, dock_position);
+		relayout_launcher_icons(home);
+		return;
+	}
+	if (home->launcher_drag_from_dock) {
+		restore_drag_layout_data(home);
+		if (overlay_to_grid_point(home, ox, oy, &gx, &gy) &&
+		    grid_point_to_cell(home, gx, gy, &target_column, &target_row) &&
+		    !launcher_cell_occupied_except(home, home->launcher_current_page,
+		    target_column, target_row, icon, NULL)) {
+			icon->page = home->launcher_current_page;
+			icon->column = target_column;
+			icon->row = target_row;
+		}
+		relayout_launcher_icons(home);
+		return;
+	}
+	if (point_in_edit_controls(home, ox, oy))
+		return;
 	/* Absolute finger position in grid space — avoids cumulative offset skew. */
 	if (!overlay_to_grid_point(home, home->launcher_press_x + offset_x,
 	    home->launcher_press_y + offset_y, &gx, &gy))
@@ -6835,7 +7198,7 @@ update_launcher_icon_drag(struct home *home, double offset_x, double offset_y)
 	    home->config.drag_cell_switch_fraction);
 	home->drag_preview_column = target_column;
 	home->drag_preview_row = target_row;
-	if (target_column == icon->column && target_row == icon->row)
+	if (icon->page != HOME_DOCK_PAGE && target_column == icon->column && target_row == icon->row)
 		return;
 	/*
 	 * Restore snapshot data only, then one light icon relayout inside
@@ -6864,17 +7227,11 @@ end_launcher_icon_drag(struct home *home, double offset_x, double offset_y)
 	}
 	restore_drag_layout_data(home);
 	if (icon != NULL && !remove) {
-		if (!point_in_edit_controls(home, ox, oy) &&
-		    home->drag_preview_column >= 0 && home->drag_preview_row >= 0)
-			apply_launcher_icon_move(home, icon,
-			    home->drag_preview_column, home->drag_preview_row);
-		/* Reattach even when the cell was unchanged after a page hop. */
-		relayout_launcher_icons(home);
-		if (icon->page != home->launcher_current_page)
-			set_launcher_page(home, icon->page);
-	} else {
-		relayout_launcher_icons(home);
+		update_launcher_icon_drag(home, offset_x, offset_y);
+		if (home->launcher_drag_from_dock && icon->page != HOME_DOCK_PAGE)
+			(void)preferences_add_favorite(icon->desktop_id);
 	}
+	relayout_launcher_icons(home);
 	clear_drag_layout_snapshot(home);
 	reset_drag_preview(home);
 	cancel_launcher_push_dwell(home);
@@ -6968,9 +7325,8 @@ finish_page_settle(struct home *home)
 	home->page_drag_dx = 0.0;
 	clear_page_drag_offset(home);
 	refresh_launcher_page_bar(home);
-	if (commit >= 0)
-		save_home_layout(home);
 	home->page_drag_owned = false;
+	resume_widget_updates(home);
 }
 
 static gboolean
@@ -7034,6 +7390,34 @@ start_page_settle(struct home *home, double from_dx, double to_dx)
 		gtk_widget_add_css_class(home->page_strip, "paging");
 	home->page_settle_source = gtk_widget_add_tick_callback(
 	    GTK_WIDGET(home->context_overlay), page_settle_tick, home, NULL);
+	sync_widget_activity(home);
+}
+
+/* In the editor, occupied cells still belong to move/resize gestures.
+ * Only the page background may start paging; exclude the tray and controls. */
+static bool
+home_edit_page_swipe_at(struct home *home, double x, double y)
+{
+	graphene_point_t in = GRAPHENE_POINT_INIT(x, y), local;
+	double item_x, item_y;
+
+	if (home->widget_picker != NULL && gtk_widget_get_visible(home->widget_picker))
+		return false;
+	if (home->page_viewport == NULL ||
+	    !gtk_widget_compute_point(GTK_WIDGET(home->context_overlay),
+	    home->page_viewport, &in, &local) || local.x < 0 || local.y < 0 ||
+	    local.x >= gtk_widget_get_width(home->page_viewport) ||
+	    local.y >= gtk_widget_get_height(home->page_viewport))
+		return false;
+	return home_grid_item_at(home, x, y, &item_x, &item_y) == NULL &&
+	    home_launcher_icon_at(home, x, y) == NULL;
+}
+
+static double
+home_page_drag_scale(struct home *home)
+{
+	return home->layout_editing && home->edit_frame != NULL &&
+	    home->edit_frame->scale > 0 ? home->edit_frame->scale : 1.0;
 }
 
 static void
@@ -7045,9 +7429,13 @@ home_page_drag_begin(GtkGestureDrag *gesture, double start_x, double start_y,
 	(void)gesture;
 	home->page_drag_pending = false;
 	home->page_drag_active = false;
-	if (home->layout_editing || home->active_drag_item != NULL ||
+	if (home->active_drag_item != NULL ||
 	    home->active_launcher_drag != NULL ||
 	    home->launcher_drag_armed)
+		return;
+	if (dock_drop_position(home, start_x, start_y, NULL))
+		return;
+	if (home->layout_editing && !home_edit_page_swipe_at(home, start_x, start_y))
 		return;
 	if (home->launcher_page_count <= 1)
 		return;
@@ -7081,7 +7469,7 @@ home_page_drag_update(GtkGestureDrag *gesture, double offset_x, double offset_y,
 		cancel_launcher_drag_arm(home);
 
 	if (home->page_drag_pending && !home->page_drag_active) {
-		if (home->layout_editing || home->active_drag_item != NULL ||
+		if (home->active_drag_item != NULL ||
 		    home->active_launcher_drag != NULL ||
 		    home->launcher_drag_armed) {
 			home->page_drag_pending = false;
@@ -7089,7 +7477,7 @@ home_page_drag_update(GtkGestureDrag *gesture, double offset_x, double offset_y,
 		}
 		/* Resolve intent quickly without turning tap jitter into paging. */
 		threshold = MAX(HOME_TAP_SLOP,
-		    (double)pager_page_stride(home) * 0.04);
+		    (double)pager_page_stride(home) * home_page_drag_scale(home) * 0.04);
 		if (fabs(offset_x) < threshold && fabs(offset_y) < threshold)
 			return;
 		if (fabs(offset_x) <= fabs(offset_y) * 1.15) {
@@ -7102,6 +7490,7 @@ home_page_drag_update(GtkGestureDrag *gesture, double offset_x, double offset_y,
 		home->page_drag_pending = false;
 		home->page_drag_active = true;
 		home->page_drag_owned = true;
+		sync_widget_activity(home);
 		home->page_release_suppress = true;
 		cancel_launcher_drag_arm(home);
 		gtk_gesture_set_state(GTK_GESTURE(gesture),
@@ -7112,6 +7501,7 @@ home_page_drag_update(GtkGestureDrag *gesture, double offset_x, double offset_y,
 	width = pager_page_stride(home);
 	if (width <= 0)
 		return;
+	offset_x /= home_page_drag_scale(home);
 	max_dx = (double)width;
 	/* Rubber-band at ends. */
 	if ((home->launcher_current_page <= 0 && offset_x > 0.0) ||
@@ -7147,6 +7537,7 @@ home_page_drag_end(GtkGestureDrag *gesture, double offset_x, double offset_y,
 		finish_page_settle(home);
 		return;
 	}
+	offset_x /= home_page_drag_scale(home);
 	/*
 	 * Approximate fling from drag distance over a short window: treat a
 	 * large offset as velocity in that direction when past ~30% width.
@@ -7159,8 +7550,8 @@ home_page_drag_end(GtkGestureDrag *gesture, double offset_x, double offset_y,
 	target = home_pager_commit_page(home->launcher_current_page,
 	    home->launcher_page_count, fraction, velocity_x,
 	    home->config.page_snap_fraction, home->config.page_fling_velocity);
-	settle_from = -(double)home->launcher_current_page * (double)width +
-	    offset_x;
+	/* Continue from the clamped/rubber-banded position actually painted. */
+	settle_from = home->page_strip_x;
 	home->page_settle_commit = target;
 	start_page_settle(home, settle_from,
 	    -(double)target * (double)width);
@@ -7200,6 +7591,11 @@ ensure_launcher_button(struct home *home, struct home_launcher_icon *icon)
 		return;
 	app_icon = favorite_icon_for_id(icon->desktop_id);
 	icon->button = launcher_icon_button(home, app_icon, icon->desktop_id);
+	GAppInfo *app = find_favorite_app(icon->desktop_id);
+	const char *name = app ? g_app_info_get_display_name(app) : icon->desktop_id;
+	gtk_widget_set_tooltip_text(icon->button, name);
+	gtk_accessible_update_property(GTK_ACCESSIBLE(icon->button), GTK_ACCESSIBLE_PROPERTY_LABEL, name, -1);
+	g_clear_object(&app);
 	g_object_unref(app_icon);
 	g_object_ref_sink(icon->button);
 }
@@ -7217,12 +7613,13 @@ refresh_launcher_icons(struct home *home)
 	if (home->launcher_icons == NULL)
 		home->launcher_icons =
 		    g_ptr_array_new_with_free_func(launcher_icon_free);
+	seed_default_dock(home);
 	for (ssize_t i = (ssize_t)home->launcher_icons->len - 1; i >= 0; i--) {
 		struct home_launcher_icon *icon =
 		    g_ptr_array_index(home->launcher_icons, (size_t)i);
 
-		if (!listed || !favorite_list_contains(favorites,
-		    icon->desktop_id))
+		if (icon->page != HOME_DOCK_PAGE &&
+		    (!listed || !favorite_list_contains(favorites, icon->desktop_id)))
 			g_ptr_array_remove_index(home->launcher_icons, (size_t)i);
 	}
 	if (listed) {
@@ -7495,6 +7892,10 @@ home_navigation_key(GtkEventControllerKey *controller, guint keyval,
 		    gtk_widget_get_mapped(icon->button))
 			g_ptr_array_add(candidates, icon->button);
 	}
+	for (GtkWidget *button = home->tray ? gtk_widget_get_first_child(home->tray) : NULL;
+	    button != NULL; button = gtk_widget_get_next_sibling(button))
+		if (gtk_widget_get_mapped(button))
+			g_ptr_array_add(candidates, button);
 	for (guint i = 0; i < candidates->len; i++)
 		if (focus == g_ptr_array_index(candidates, i)) {
 			if (activate)
@@ -8009,49 +8410,10 @@ activate(GtkApplication *application, gpointer data)
 	gtk_widget_set_vexpand(GTK_WIDGET(home->context_grid), TRUE);
 	gtk_widget_set_overflow(GTK_WIDGET(home->context_grid),
 	    GTK_OVERFLOW_HIDDEN);
-	/* Keep explicit, non-targetable sentinels in every cluster track. */
-	home->grid_anchor = gtk_label_new(" ");
-	gtk_widget_set_size_request(home->grid_anchor, 1, 1);
-	gtk_widget_set_hexpand(home->grid_anchor, TRUE);
-	gtk_widget_set_vexpand(home->grid_anchor, TRUE);
-	gtk_widget_set_opacity(home->grid_anchor, 0.0);
-	gtk_widget_set_can_target(home->grid_anchor, false);
-	gtk_grid_attach(home->context_grid, home->grid_anchor, 0, 0,
-	    home_cols(home), home_cluster_rows(home));
-	for (int column = 0; column < home_cols(home); column++) {
-		GtkWidget *anchor = gtk_label_new(" ");
-
-		gtk_widget_set_size_request(anchor, 1, 1);
-		gtk_widget_set_opacity(anchor, 0.0);
-		gtk_widget_set_can_target(anchor, false);
-		gtk_grid_attach(home->context_grid, anchor, column, 0, 1, 1);
-	}
-	for (int row = 1; row < home_cluster_rows(home); row++) {
-		GtkWidget *anchor = gtk_label_new(" ");
-
-		gtk_widget_set_size_request(anchor, 1, 1);
-		gtk_widget_set_opacity(anchor, 0.0);
-		gtk_widget_set_can_target(anchor, false);
-		gtk_grid_attach(home->context_grid, anchor, 0, row, 1, 1);
-	}
+	seed_page_grid_anchors(home->context_grid, home_cols(home), home_rows(home));
 	gtk_box_append(GTK_BOX(home->cluster_host),
 	    GTK_WIDGET(home->context_grid));
-
-	home->strip_host = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-	gtk_widget_add_css_class(home->strip_host, "home-strip");
-	gtk_widget_set_hexpand(home->strip_host, TRUE);
-	gtk_widget_set_vexpand(home->strip_host, FALSE);
-	home->strip_grid = GTK_GRID(gtk_grid_new());
-	gtk_grid_set_column_homogeneous(home->strip_grid, TRUE);
-	gtk_grid_set_row_homogeneous(home->strip_grid, TRUE);
-	gtk_grid_set_column_spacing(home->strip_grid, home_spacing(home));
-	gtk_grid_set_row_spacing(home->strip_grid, home_spacing(home));
-	gtk_widget_set_hexpand(GTK_WIDGET(home->strip_grid), TRUE);
-	gtk_widget_set_vexpand(GTK_WIDGET(home->strip_grid), TRUE);
-	seed_strip_grid_anchors(home);
-	gtk_box_append(GTK_BOX(home->strip_host), GTK_WIDGET(home->strip_grid));
 	gtk_box_append(GTK_BOX(home->context_body), home->cluster_host);
-	gtk_box_append(GTK_BOX(home->context_body), home->strip_host);
 	gtk_widget_add_css_class(home->context_body, "home-page-panel");
 	gtk_widget_set_hexpand(home->context_body, FALSE);
 	gtk_widget_set_vexpand(home->context_body, TRUE);
@@ -8100,9 +8462,16 @@ activate(GtkApplication *application, gpointer data)
 	gtk_box_append(GTK_BOX(home->page_strip), home->context_body);
 	home->page_panel_count = 1;
 	home->edit_scene = GTK_OVERLAY(gtk_overlay_new());
-	gtk_overlay_set_child(home->edit_scene, home->page_viewport);
+	/* Keep the tray fixed during page swipes, but include it in the edit
+	 * transform so the whole Home surface makes room for one action row. */
+	GtkWidget *scene_content = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+	home->scene_content = scene_content;
+	gtk_box_append(GTK_BOX(scene_content), home->page_viewport);
+	home->tray = make_home_tray(home);
+	gtk_box_append(GTK_BOX(scene_content), home->tray);
+	gtk_overlay_set_child(home->edit_scene, scene_content);
 	home->edit_controls = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
-	gtk_widget_add_css_class(home->edit_controls, "home-edit-controls");
+	gtk_widget_add_css_class(home->edit_controls, "home-edit-controls-inline");
 	home->edit_frame = home_edit_frame_new(GTK_WIDGET(home->edit_scene),
 	    home->edit_controls);
 	gtk_widget_set_hexpand(GTK_WIDGET(home->edit_frame), true);
@@ -8190,7 +8559,7 @@ activate(GtkApplication *application, gpointer data)
 		gtk_widget_add_controller(GTK_WIDGET(home->context_overlay),
 		    GTK_EVENT_CONTROLLER(page_drag));
 	}
-	page_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+	page_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
 	home->launcher_page_bar = page_bar;
 	gtk_widget_add_css_class(page_bar, "home-launcher-page-bar");
 	gtk_widget_set_halign(page_bar, GTK_ALIGN_CENTER);
@@ -8200,7 +8569,7 @@ activate(GtkApplication *application, gpointer data)
 	home->launcher_page_remove = GTK_BUTTON(
 	    gtk_button_new_with_label("−"));
 	gtk_widget_set_focusable(GTK_WIDGET(home->launcher_page_remove), FALSE);
-	home->launcher_page_label = GTK_LABEL(gtk_label_new("Screen 1 of 1"));
+	home->launcher_page_label = GTK_LABEL(gtk_label_new("1/1"));
 	gtk_widget_add_css_class(GTK_WIDGET(home->launcher_page_label),
 	    "home-launcher-page-label");
 	home->launcher_page_add = GTK_BUTTON(gtk_button_new_with_label("+"));
@@ -8225,10 +8594,13 @@ activate(GtkApplication *application, gpointer data)
 	gtk_box_append(GTK_BOX(page_bar), GTK_WIDGET(home->launcher_page_label));
 	gtk_box_append(GTK_BOX(page_bar), GTK_WIDGET(home->launcher_page_add));
 	{
-		GtkWidget *toolbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 7);
-		GtkWidget *add_widget = gtk_button_new_with_label("Add widget");
+		GtkWidget *toolbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
+		GtkWidget *add_widget = gtk_button_new_with_label("Widgets");
 		GtkWidget *wallpaper = gtk_button_new_with_label("Wallpaper");
-		GtkWidget *done = gtk_button_new_with_label("Done");
+		GtkWidget *done = gtk_button_new_with_label("✓");
+		gtk_widget_set_tooltip_text(done, "Done");
+		gtk_accessible_update_property(GTK_ACCESSIBLE(done),
+		    GTK_ACCESSIBLE_PROPERTY_LABEL, "Done", -1);
 		GtkWidget *picker = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
 		GtkWidget *picker_header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
 		GtkWidget *picker_title = gtk_label_new("Add widget");
@@ -8242,9 +8614,10 @@ activate(GtkApplication *application, gpointer data)
 		gtk_widget_set_valign(toolbar, GTK_ALIGN_END);
 		gtk_widget_set_margin_bottom(toolbar, 0);
 		gtk_widget_set_visible(toolbar, false);
-		GtkWidget *actions[] = { add_widget, wallpaper, done };
+		GtkWidget *actions[] = { wallpaper, add_widget, page_bar, done };
 		for (size_t i = 0; i < G_N_ELEMENTS(actions); i++) {
-			gtk_widget_add_css_class(actions[i], "home-edit-action");
+			if (actions[i] != page_bar)
+				gtk_widget_add_css_class(actions[i], "home-edit-action");
 			gtk_widget_set_focusable(actions[i], false);
 			gtk_box_append(GTK_BOX(toolbar), actions[i]);
 		}
@@ -8255,7 +8628,6 @@ activate(GtkApplication *application, gpointer data)
 		    G_CALLBACK(wallpaper_edit_clicked), home);
 		g_signal_connect(done, "clicked", G_CALLBACK(edit_done_clicked), home);
 		gtk_box_append(GTK_BOX(home->edit_controls), toolbar);
-		gtk_box_append(GTK_BOX(home->edit_controls), page_bar);
 
 		GtkWidget *picker_host = home_picker_host_new(picker);
 		home->widget_picker = picker_host;

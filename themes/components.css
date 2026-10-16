@@ -16,9 +16,10 @@ window#ctlsthome {
   background-image: none;
 }
 
-/* Edit-only clearance above the 56px expanded dock. Home already leaves
- * 28px at the physical bottom edge; normal grid geometry stays unchanged. */
-window#ctlsthome .home-edit-controls { padding-bottom: 28px; }
+.home-weather-card { background: @ctlst_panel; }
+
+/* Dock belongs to the scaled edit scene. */
+window#ctlsthome .home-edit-controls-inline { padding: 0; }
 window#ctlsthome .home-launcher-page-bar button {
   min-width: 44px;
   min-height: 44px;

@@ -9,7 +9,7 @@ OUTPUT ?= ctlsthome
 all: $(OUTPUT)
 
 HOME_SRCS = ctlsthome.c home-config.c home-pager.c home-rotation.c home-widget-desc.c home-widget-runtime.c
-HOME_HDRS = home-config.h home-pager.h home-rotation.h home-widget-desc.h home-widget-runtime.h home-edit-frame.h home-picker-host.h home-allocation-host.h home-launcher-host.h
+HOME_HDRS = home-config.h home-pager.h home-rotation.h home-widget-desc.h home-widget-runtime.h home-edit-frame.h home-picker-host.h home-allocation-host.h home-launcher-host.h home-cell-content.h
 
 $(OUTPUT): $(HOME_SRCS) $(HOME_HDRS) ../ctlst-runtime.h
 	mkdir -p $(@D)

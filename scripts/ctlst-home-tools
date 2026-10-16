@@ -1,0 +1,271 @@
+#!/usr/bin/env python3
+"""Responsive Photos and Media widgets; Photos also has a native gallery UI."""
+from __future__ import annotations
+import concurrent.futures
+import hashlib
+import json
+import os
+import itertools
+from pathlib import Path
+import select
+import subprocess
+import sys
+import time
+import threading
+
+PICTURES = Path(os.environ.get('CTLST_PHOTOS_DIR', str(Path.home() / 'Pictures')))
+CACHE = Path(os.environ.get('XDG_CACHE_HOME', str(Path.home() / '.cache'))) / 'ctlst/widget-images'
+EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.heic', '.avif'}
+
+def background(fn):
+    future = concurrent.futures.Future()
+    def run():
+        # Linux nice is per-thread: thumbnail/metadata work yields to shell input.
+        if hasattr(os, "setpriority"):
+            try: os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 10)
+            except (OSError, AttributeError): pass
+        try: future.set_result(fn())
+        except Exception as error: future.set_exception(error)
+    threading.Thread(target=run, daemon=True).start()
+    return future
+
+def photos(limit=60):
+    result = []
+    # Deliberately bounded, two levels, no symlink traversal or disk-wide search.
+    if not PICTURES.is_dir(): return result
+    folders = [PICTURES] + list(itertools.islice((p for p in PICTURES.iterdir() if not p.is_symlink() and p.is_dir()), 32))
+    for folder in folders:
+        for index, path in enumerate(folder.iterdir()):
+            if index >= 3000: break
+            try:
+                st = path.stat()
+                if path.is_symlink() or not path.is_file() or path.suffix.lower() not in EXTENSIONS or st.st_size > 50 * 1024 * 1024: continue
+                result.append((st.st_mtime_ns, path))
+            except OSError: pass
+    return [p for _, p in sorted(result, key=lambda item: item[0], reverse=True)[:limit]]
+
+def thumbnail(path):
+    import gi
+    gi.require_version('GdkPixbuf', '2.0')
+    from gi.repository import GdkPixbuf
+    st = path.stat()
+    key = hashlib.sha256(f'{path}:{st.st_mtime_ns}:{st.st_size}'.encode()).hexdigest()
+    CACHE.mkdir(parents=True, exist_ok=True, mode=0o700)
+    target = CACHE / (key + '.png')
+    if not target.exists():
+        info = GdkPixbuf.Pixbuf.get_file_info(str(path))
+        if not info or info.width < 1 or info.height < 1 or info.width * info.height > 100_000_000:
+            raise ValueError('Unsupported image')
+        pix = GdkPixbuf.Pixbuf.new_from_file_at_scale(str(path), 384, 384, True)
+        oriented = pix.apply_embedded_orientation()
+        tmp = target.with_suffix(f'.{os.getpid()}.{threading.get_native_id()}.tmp.png')
+        oriented.savev(str(tmp), 'png', [], [])
+        tmp.chmod(0o600)
+        tmp.replace(target)
+    return str(target)
+
+def prune_thumbnails():
+    if not CACHE.is_dir(): return
+    files = [p for p in CACHE.glob("*.png") if len(p.stem) == 64 and all(c in "0123456789abcdef" for c in p.stem)]
+    for path in sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)[256:]:
+        try: path.unlink()
+        except OSError: pass
+
+def load_photos():
+    files = photos()
+    thumbs = []
+    for path in files[:8]:
+        try: thumbs.append((str(path), thumbnail(path)))
+        except Exception: continue
+        if len(thumbs) == 4: break
+    prune_thumbnails()
+    return {'count': len(files), 'items': thumbs}
+
+def command(*args):
+    try:
+        return subprocess.run(args, text=True, capture_output=True, timeout=3, check=True).stdout.strip()[:2048]
+    except (OSError, subprocess.SubprocessError): return ''
+
+def load_media():
+    return {'title': command('playerctl', 'metadata', '--format', '{{title}}'),
+            'artist': command('playerctl', 'metadata', '--format', '{{artist}}'),
+            'state': command('playerctl', 'status')}
+
+def text(value, x, y, size=13, fill='@ctlst_text', bold=False):
+    return dict(type='text', text=value, x=x, y=y, size=size, fill=fill, weight='bold' if bold else 'normal')
+
+def fit(value, width, size=13):
+    count = max(1, int(width / (size * .64)))
+    return value if len(value) <= count else value[:max(0,count-1)] + '…'
+
+def media_buttons(w, h):
+    pad = 12 if min(w, h) >= 100 else 8
+    if h < 56: return []
+    if h < 100: return [(1, max(pad, w-pad-44), (h-44)/2, 44)]
+    bw = (w-2*pad-12)/3
+    return [(i, pad+i*(bw+6), h-pad-44, bw) for i in range(3)]
+
+def scene(mode, data, w, h):
+    pad = 12 if min(w, h) >= 100 else 8
+    nodes = []
+    if mode == 'photos':
+        items = data.get('items', [])
+        title = 'Photos' if w < 240 else f"Photos · {data.get('count', 0)} recent"
+        nodes.append(text(title, pad, pad, 14, bold=True))
+        top, bottom = pad + 25, h - pad
+        if not items:
+            if h >= 90: nodes.append(text('Your photos, right here', pad, top + 8, 13, '@ctlst_muted'))
+            if h >= 120: nodes.append(text('Tap to open Gallery', pad, top + 30, 12, '@ctlst_muted'))
+        elif bottom - top >= 24:
+            columns = 2 if w >= 280 and h >= 180 else 1
+            rows = 2 if columns == 2 and len(items) >= 3 and h >= 240 else 1
+            count = min(len(items), columns * rows)
+            gap = 6
+            iw = (w - pad * 2 - (columns-1)*gap) / columns
+            ih = (bottom - top - (rows-1)*gap) / rows
+            for i, (_, path) in enumerate(items[:count]):
+                nodes.append(dict(type='image', path=path, x=pad+(i%columns)*(iw+gap), y=top+(i//columns)*(ih+gap), width=iw, height=ih, radius=12))
+    else:
+        title = data.get('title') or 'Nothing playing'
+        labels = ['‹', 'Ⅱ' if data.get('state') == 'Playing' else '▶', '›']
+        if h < 100:
+            nodes.append(text(fit(title, w-2*pad-54, 13), pad, max(pad,(h-18)/2), 13, bold=True))
+        else:
+            nodes.append(text('Now playing', pad, pad, 14, '@ctlst_accent', True))
+            if h >= 132: nodes.append(text(fit(title, w-2*pad, 16), pad, pad+26, 16, bold=True))
+            if h >= 170: nodes.append(text(fit(data.get('artist') or 'Start music in any player', w-2*pad), pad, pad+50, 13, '@ctlst_muted'))
+        for i, x, y, bw in media_buttons(w,h):
+            nodes.append(dict(type='rect', x=x, y=y, width=bw, height=44, radius=14, fill='@ctlst_accent_soft'))
+            n = text(labels[i], x+bw/2, y+9, 20, '@ctlst_accent', True); n['align']='center'; nodes.append(n)
+    return dict(ctlst_widget=1, type='frame', view=dict(width=w,height=h,background='@ctlst_panel'), nodes=nodes)
+
+def widget(mode):
+    visible = True
+    width, height = 240, 240
+    data, sent, future = {}, None, None
+    last = -1e9
+    pressed = None
+    buffered = b''
+    def send():
+        nonlocal sent
+        frame = scene(mode, data, width, height)
+        if visible and frame != sent:
+            print(json.dumps(frame, separators=(',', ':')), flush=True); sent = frame
+    try:
+        while True:
+            if future and future.done():
+                try: data = future.result()
+                except Exception: data = {}
+                future = None
+                send()
+            now = time.monotonic()
+            interval = 30 if mode == 'photos' else 2
+            if visible and future is None and now-last >= interval:
+                future = background(load_photos if mode == 'photos' else load_media); last=now
+            timeout = .1 if visible and future else max(.1, interval-(now-last)) if visible else None
+            if b'\n' not in buffered:
+                ready,_,_ = select.select([sys.stdin], [], [], timeout)
+                if not ready: continue
+                chunk = os.read(sys.stdin.fileno(), 8192)
+                if not chunk: break
+                buffered += chunk
+                if len(buffered) > 256 * 1024: break
+                if b'\n' not in buffered: continue
+            raw, _, buffered = buffered.partition(b'\n')
+            try: msg = json.loads(raw)
+            except ValueError: continue
+            kind = msg.get('type')
+            if kind == 'shutdown': break
+            if kind in ('hello','configure'):
+                width = max(1, min(4096, int(msg.get('width',width))))
+                height = max(1, min(4096, int(msg.get('height',height))))
+                send()
+            elif kind == 'visibility':
+                visible = bool(msg.get('visible')); pressed=None
+                if visible: last=-1e9; send()
+            elif kind == 'pointer' and mode == 'media':
+                phase = msg.get('phase'); x=msg.get('view_x',-1); y=msg.get('view_y',-1)
+                target = next((i for i,bx,by,bw in media_buttons(width,height) if bx <= x < bx+bw and by <= y < by+44), None)
+                if phase == 'begin': pressed=target
+                elif phase == 'cancel': pressed=None
+                elif phase == 'move' and target != pressed: pressed=None
+                elif phase == 'end':
+                    if visible and pressed is not None and target == pressed and msg.get('inside'):
+                        # Fixed commands, worker-bound; never execute on Home's GTK loop.
+                        if future is None:
+                            action = ['previous','play-pause','next'][pressed]
+                            future=background(lambda: (command('playerctl',action),load_media())[1])
+                    pressed=None
+    finally:
+        pass  # Daemon workers cannot delay shutdown or hold Home open.
+
+def gallery():
+    import gi
+    gi.require_version('Gtk','4.0'); gi.require_version('Adw','1'); gi.require_version('Gdk','4.0')
+    from gi.repository import Gtk, Adw, Gdk, GLib
+    class Gallery(Adw.Application):
+        def __init__(self):
+            super().__init__(application_id='dev.ctlst.Photos')
+            self.connect('activate', self.activate)
+        def activate(self, *_):
+            if self.get_active_window(): self.get_active_window().present(); return
+            self.win=Adw.ApplicationWindow(application=self, title='Photos', default_width=480, default_height=700)
+            toolbar=Adw.ToolbarView(); header=Adw.HeaderBar()
+            header.set_title_widget(Adw.WindowTitle(title='Photos',subtitle='Your camera roll & screenshots'))
+            refresh=Gtk.Button(icon_name='view-refresh-symbolic',tooltip_text='Refresh photos'); refresh.connect('clicked',lambda *_:self.load())
+            header.pack_end(refresh); toolbar.add_top_bar(header)
+            self.flow=Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, min_children_per_line=2,max_children_per_line=5,column_spacing=8,row_spacing=8,homogeneous=True)
+            self.flow.set_valign(Gtk.Align.START)
+            self.flow.set_margin_start(12);self.flow.set_margin_end(12);self.flow.set_margin_top(12);self.flow.set_margin_bottom(12)
+            self.status=Gtk.Label(label='Loading photos…',wrap=True,margin_top=12,margin_bottom=0,margin_start=16,margin_end=16)
+            box=Gtk.Box(orientation=Gtk.Orientation.VERTICAL);box.append(self.status);box.append(self.flow)
+            scroll=Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER,child=box)
+            self.pages=Gtk.Stack()
+            self.pages.add_named(scroll,'photos')
+            self.empty=Adw.StatusPage(title='No photos yet',description='Take a picture with Camera to start your gallery.',icon_name='camera-photo-symbolic')
+            self.pages.add_named(self.empty,'empty')
+            toolbar.set_content(self.pages)
+            self.win.set_content(toolbar);self.win.present();self.loading=False;self.load()
+        def load(self):
+            if self.loading:return
+            self.loading=True
+            self.status.set_label('Loading photos…')
+            self.status.set_visible(True)
+            background(self.scan)
+        def scan(self):
+            batch=[]; count=0; first=True
+            try:
+                for p in photos():
+                    try: batch.append((str(p),thumbnail(p)))
+                    except Exception: continue
+                    if len(batch) >= 4:
+                        count+=len(batch); GLib.idle_add(self.populate,batch,first,False,count)
+                        batch=[]; first=False
+            except OSError: pass
+            count+=len(batch)
+            GLib.idle_add(self.populate,batch,first,True,count)
+            prune_thumbnails()
+        def populate(self,items,first,done,count):
+            if first:
+                child=self.flow.get_first_child()
+                while child:
+                    nxt=child.get_next_sibling();self.flow.remove(child);child=nxt
+            for path,thumb in items:
+                picture=Gtk.Picture.new_for_filename(thumb);picture.set_content_fit(Gtk.ContentFit.COVER)
+                picture.set_size_request(128,128);picture.set_can_shrink(True)
+                frame=Gtk.AspectFrame(ratio=1.0,obey_child=False,child=picture)
+                button=Gtk.Button(child=frame,tooltip_text=Path(path).name)
+                button.connect('clicked',lambda _,p=path:subprocess.Popen(['xdg-open',p],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL))
+                self.flow.append(button)
+            self.status.set_label(f'{count} recent photos' if count else 'No photos yet. Take a picture with Camera to start your gallery.')
+            if count: self.pages.set_visible_child_name('photos')
+            if done:
+                self.pages.set_visible_child_name('photos' if count else 'empty')
+                self.loading=False
+            return False
+    return Gallery().run([])
+
+if __name__ == '__main__':
+    mode=sys.argv[1] if len(sys.argv)>1 else 'photos'
+    if mode == 'gallery':raise SystemExit(gallery())
+    widget(mode)

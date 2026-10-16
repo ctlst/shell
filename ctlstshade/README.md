@@ -75,6 +75,11 @@ Device names and status labels wrap to avoid widening the output.
 Unavailable providers display an unavailable state; the relevant controls do
 not perform a successful-looking no-op.
 
+Quick Settings keeps native kinetic scrolling on short screens without a
+visible scrollbar. A filtered directory monitor reloads atomic replacements of
+the generated theme file. Theme variants override component defaults, and
+unchanged theme contents do not trigger another CSS reload.
+
 ## Development
 
 Build with `make` in this directory or `make core` from the repository root.

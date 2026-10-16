@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Photos
+Comment=Browse your camera roll and screenshots
+Exec=ctlst-home-tools gallery
+Icon=org.gnome.Loupe
+Terminal=false
+Categories=Graphics;Photography;
+StartupNotify=true

@@ -102,3 +102,10 @@ non-default XDG widget directories are not yet a verified portable path.
   or registering it. Helpers have your user's filesystem/network privileges.
 - Test initial render, live changes, theme change, hide/show, resize/rotation,
   clean shutdown and idle CPU. Test applicable mouse/touch/keyboard routes.
+
+Optional Photos, Now Playing and calendar providers are documented in
+[extra widgets](EXTRA-WIDGETS.md). Review actual rendered widgets in portrait,
+landscape, compact and expanded sizes. Balance padding and icon/text alignment
+at integer and fractional scales, retain usable touch targets, and check that
+updates do not cause redraws during Home swipes.
+For sizing and typography examples, see the [layout reference](../agent/pi/skills/ctlst-app-builder/references/widget-layout.md).

@@ -2,11 +2,15 @@
 #include "home-widget-runtime.h"
 
 #include <math.h>
+#include <stdio.h>
+#include <sys/stat.h>
 #include <pango/pangocairo.h>
 #include <json-c/json.h>
 
 #define WIDGET_LINE_MAX (256 * 1024)
 #define WIDGET_NODE_MAX 512
+#define WIDGET_FRAME_MS 34
+#define WIDGET_SEND_MAX 64
 #define WIDGET_THEME_TOKEN_MAX 16
 
 struct widget_theme_token {
@@ -44,6 +48,15 @@ struct home_widget_runtime {
 	GFileMonitor *theme_monitor;
 	struct widget_theme_token theme_tokens[G_N_ELEMENTS(k_theme_defaults)];
 	struct json_object *frame;
+	GHashTable *images;
+	struct json_object *pending_frame;
+	guint render_source;
+	bool theme_dirty;
+	GQueue outgoing;
+	char *write_line;
+	unsigned int refs;
+	bool closed;
+	bool pointer_active;
 	double pointer_x;
 	double pointer_y;
 	bool visible;
@@ -52,6 +65,26 @@ struct home_widget_runtime {
 
 static void widget_read_next(struct home_widget_runtime *runtime);
 static void load_theme_tokens(struct home_widget_runtime *runtime);
+static void schedule_widget_render(struct home_widget_runtime *runtime);
+
+static void
+widget_unref(struct home_widget_runtime *runtime)
+{
+	if (--runtime->refs != 0)
+		return;
+	if (runtime->frame != NULL)
+		json_object_put(runtime->frame);
+	if (runtime->pending_frame != NULL) json_object_put(runtime->pending_frame);
+	g_clear_pointer(&runtime->images, g_hash_table_unref);
+	g_queue_clear_full(&runtime->outgoing, g_free);
+	g_clear_object(&runtime->output);
+	g_clear_object(&runtime->input);
+	g_clear_object(&runtime->process);
+	g_clear_object(&runtime->theme_monitor);
+	g_clear_object(&runtime->cancel);
+	g_clear_object(&runtime->view);
+	g_free(runtime);
+}
 
 static bool
 theme_file_changed(GFile *file)
@@ -81,8 +114,8 @@ widget_theme_changed(GFileMonitor *monitor, GFile *file, GFile *other,
 	    event == G_FILE_MONITOR_EVENT_CHANGES_DONE_HINT ||
 	    event == G_FILE_MONITOR_EVENT_MOVED_IN ||
 	    event == G_FILE_MONITOR_EVENT_RENAMED) {
-		load_theme_tokens(runtime);
-		gtk_widget_queue_draw(GTK_WIDGET(runtime->view));
+		runtime->theme_dirty = true;
+		schedule_widget_render(runtime);
 	}
 }
 
@@ -232,7 +265,7 @@ draw_text_node(struct home_widget_runtime *runtime, cairo_t *cr,
 	json_number(node, "size", &size);
 	size = CLAMP(size, 4.0, 96.0);
 	layout = pango_cairo_create_layout(cr);
-	pango_layout_set_text(layout, text, 4096);
+	pango_layout_set_text(layout, text, MIN(strlen(text), 4096));
 	font = pango_font_description_new();
 	pango_font_description_set_family(font, "sans");
 	pango_font_description_set_absolute_size(font, size * PANGO_SCALE);
@@ -251,6 +284,48 @@ draw_text_node(struct home_widget_runtime *runtime, cairo_t *cr,
 	g_object_unref(layout);
 }
 
+/* Thumbnails only: helpers decode originals off-process. No filesystem work
+ * happens in draw_node or a swipe snapshot. At most four 512px PNGs per scene. */
+static void
+prepare_widget_images(struct home_widget_runtime *runtime)
+{
+	struct json_object *nodes;
+	g_hash_table_remove_all(runtime->images);
+	if (!json_object_object_get_ex(runtime->frame, "nodes", &nodes) ||
+	    !json_object_is_type(nodes, json_type_array)) return;
+	char *directory = g_strconcat(g_get_user_cache_dir(), "/ctlst/widget-images/", NULL);
+	for (size_t i = 0; i < MIN(json_object_array_length(nodes), (size_t)WIDGET_NODE_MAX); i++) {
+		struct json_object *node = json_object_array_get_idx(nodes, i);
+		if (strcmp(json_string(node, "type", ""), "image") != 0) continue;
+		if (g_hash_table_size(runtime->images) >= 4) break;
+		const char *path = json_string(node, "path", "");
+		char *canonical = g_canonicalize_filename(path, NULL);
+		struct stat st;
+		unsigned char header[24];
+		FILE *file = NULL;
+		if (!g_str_has_prefix(canonical, directory) || stat(canonical, &st) != 0 ||
+		    !S_ISREG(st.st_mode) || st.st_size > 2 * 1024 * 1024 ||
+		    (file = fopen(canonical, "rb")) == NULL) {
+			g_free(canonical); continue;
+		}
+		size_t got = fread(header, 1, sizeof(header), file);
+		fclose(file);
+		if (got == sizeof(header) && memcmp(header, "\211PNG\r\n\032\n", 8) == 0) {
+			guint32 w, h;
+			memcpy(&w, header + 16, 4); memcpy(&h, header + 20, 4);
+			w = GUINT32_FROM_BE(w); h = GUINT32_FROM_BE(h);
+			if (w > 0 && w <= 512 && h > 0 && h <= 512) {
+				cairo_surface_t *surface = cairo_image_surface_create_from_png(canonical);
+				if (cairo_surface_status(surface) == CAIRO_STATUS_SUCCESS)
+					g_hash_table_replace(runtime->images, g_strdup(path), surface);
+				else cairo_surface_destroy(surface);
+			}
+		}
+		g_free(canonical);
+	}
+	g_free(directory);
+}
+
 static void
 draw_node(struct home_widget_runtime *runtime, cairo_t *cr,
     struct json_object *node)
@@ -267,7 +342,20 @@ draw_node(struct home_widget_runtime *runtime, cairo_t *cr,
 	json_number(node, "y", &y);
 	json_number(node, "width", &width);
 	json_number(node, "height", &height);
-	if (strcmp(type, "rect") == 0) {
+	if (strcmp(type, "image") == 0) {
+		cairo_surface_t *surface = g_hash_table_lookup(runtime->images,
+		    json_string(node, "path", ""));
+		if (surface == NULL || width <= 0 || height <= 0) return;
+		double iw = cairo_image_surface_get_width(surface), ih = cairo_image_surface_get_height(surface);
+		double scale = MAX(width / iw, height / ih);
+		json_number(node, "radius", &radius);
+		cairo_save(cr);
+		rounded_rect(cr, x, y, width, height, radius); cairo_clip(cr);
+		cairo_translate(cr, x + (width - iw * scale) / 2, y + (height - ih * scale) / 2);
+		cairo_scale(cr, scale, scale);
+		cairo_set_source_surface(cr, surface, 0, 0); cairo_paint(cr);
+		cairo_restore(cr);
+	} else if (strcmp(type, "rect") == 0) {
 		json_number(node, "radius", &radius);
 		rounded_rect(cr, x, y, MAX(width, 0.0), MAX(height, 0.0), radius);
 		set_source(runtime, cr, json_string(node, "fill", "#ffffff"), "#ffffff");
@@ -330,24 +418,56 @@ draw_widget(GtkDrawingArea *area, cairo_t *cr, int width, int height,
 	}
 }
 
+static void widget_write_next(struct home_widget_runtime *runtime);
+
+static void
+widget_write_ready(GObject *source, GAsyncResult *result, gpointer data)
+{
+	struct home_widget_runtime *runtime = data;
+	GError *error = NULL;
+	gsize written;
+
+	if (!g_output_stream_write_all_finish(G_OUTPUT_STREAM(source), result,
+	    &written, &error)) {
+		g_clear_error(&error);
+		runtime->stopped = true;
+	}
+	g_clear_pointer(&runtime->write_line, g_free);
+	widget_write_next(runtime);
+	widget_unref(runtime);
+}
+
+static void
+widget_write_next(struct home_widget_runtime *runtime)
+{
+	if (runtime->closed || runtime->stopped || runtime->write_line != NULL ||
+	    g_queue_is_empty(&runtime->outgoing))
+		return;
+	runtime->write_line = g_queue_pop_head(&runtime->outgoing);
+	runtime->refs++;
+	g_output_stream_write_all_async(runtime->input, runtime->write_line,
+	    strlen(runtime->write_line), G_PRIORITY_DEFAULT, runtime->cancel,
+	    widget_write_ready, runtime);
+}
+
 static void
 widget_send(struct home_widget_runtime *runtime, struct json_object *message)
 {
 	const char *serialized;
-	gsize written = 0;
-	GError *error = NULL;
-	char *line;
 
-	if (runtime->stopped || runtime->input == NULL)
+	if (runtime->closed || runtime->stopped || runtime->input == NULL)
 		return;
-	serialized = json_object_to_json_string_ext(message, JSON_C_TO_STRING_PLAIN);
-	line = g_strconcat(serialized, "\n", NULL);
-	if (!g_output_stream_write_all(runtime->input, line, strlen(line), &written,
-	    runtime->cancel, &error)) {
-		g_clear_error(&error);
+	/* A slow/stuck helper must never block GTK or grow an unbounded queue.
+	 * Keep its last scene if it cannot keep up with bounded input. */
+	if (g_queue_get_length(&runtime->outgoing) >= WIDGET_SEND_MAX) {
 		runtime->stopped = true;
+		g_cancellable_cancel(runtime->cancel);
+		g_subprocess_force_exit(runtime->process);
+		return;
 	}
-	g_free(line);
+	serialized = json_object_to_json_string_ext(message, JSON_C_TO_STRING_PLAIN);
+	g_queue_push_tail(&runtime->outgoing, g_strconcat(serialized, "\n", NULL));
+	widget_write_next(runtime);
 }
 
 static void
@@ -426,6 +546,9 @@ pointer_begin(GtkGestureDrag *gesture, double x, double y, gpointer data)
 	struct home_widget_runtime *runtime = data;
 
 	(void)gesture;
+	if (!runtime->visible)
+		return;
+	runtime->pointer_active = true;
 	runtime->pointer_x = x;
 	runtime->pointer_y = y;
 	send_pointer(runtime, "begin", x, y);
@@ -438,6 +561,8 @@ pointer_update(GtkGestureDrag *gesture, double offset_x, double offset_y,
 	struct home_widget_runtime *runtime = data;
 
 	(void)gesture;
+	if (!runtime->pointer_active || !runtime->visible)
+		return;
 	send_pointer(runtime, "move", runtime->pointer_x + offset_x,
 	    runtime->pointer_y + offset_y);
 }
@@ -449,6 +574,9 @@ pointer_end(GtkGestureDrag *gesture, double offset_x, double offset_y,
 	struct home_widget_runtime *runtime = data;
 
 	(void)gesture;
+	if (!runtime->pointer_active || !runtime->visible)
+		return;
+	runtime->pointer_active = false;
 	send_pointer(runtime, "end", runtime->pointer_x + offset_x,
 	    runtime->pointer_y + offset_y);
 }
@@ -467,44 +595,90 @@ valid_frame(struct json_object *frame)
 	    strcmp(json_object_get_string(type), "frame") == 0;
 }
 
+/* Only the latest complete frame survives a burst. Hidden/moving pages
+ * retain their painted scene without invalidating it. */
+static gboolean
+render_pending_widget(gpointer data)
+{
+	struct home_widget_runtime *runtime = data;
+	bool changed = false;
+
+	runtime->render_source = 0;
+	if (!runtime->visible || runtime->closed)
+		return G_SOURCE_REMOVE;
+	if (runtime->pending_frame != NULL) {
+		struct json_object *frame = g_steal_pointer(&runtime->pending_frame);
+		if (frame != NULL && valid_frame(frame)) {
+			struct json_object *old_view = NULL, *new_view = NULL;
+			struct json_object *old_nodes = NULL, *new_nodes = NULL;
+			if (runtime->frame != NULL) {
+				json_object_object_get_ex(runtime->frame, "view", &old_view);
+				json_object_object_get_ex(runtime->frame, "nodes", &old_nodes);
+			}
+			json_object_object_get_ex(frame, "view", &new_view);
+			json_object_object_get_ex(frame, "nodes", &new_nodes);
+			changed = runtime->frame == NULL ||
+			    !json_object_equal(old_view, new_view) ||
+			    !json_object_equal(old_nodes, new_nodes);
+			if (runtime->frame != NULL)
+				json_object_put(runtime->frame);
+			runtime->frame = frame;
+		} else if (frame != NULL) {
+			json_object_put(frame);
+		}
+	}
+	if (runtime->theme_dirty) {
+		load_theme_tokens(runtime);
+		runtime->theme_dirty = false;
+		changed = true;
+	}
+	if (changed && runtime->frame != NULL)
+		prepare_widget_images(runtime);
+	if (changed)
+		gtk_widget_queue_draw(GTK_WIDGET(runtime->view));
+	return G_SOURCE_REMOVE;
+}
+
+static void
+schedule_widget_render(struct home_widget_runtime *runtime)
+{
+	if (runtime->visible && !runtime->closed && runtime->render_source == 0)
+		runtime->render_source = g_timeout_add(WIDGET_FRAME_MS,
+		    render_pending_widget, runtime);
+}
+
 static void
 widget_line_ready(GObject *source, GAsyncResult *result, gpointer data)
 {
 	struct home_widget_runtime *runtime = data;
 	gsize length = 0;
 	GError *error = NULL;
-	char *line;
-	struct json_object *frame;
+	char *line = g_data_input_stream_read_line_finish(
+	    G_DATA_INPUT_STREAM(source), result, &length, &error);
 
-	(void)source;
-	line = g_data_input_stream_read_line_finish(runtime->output, result,
-	    &length, &error);
 	if (line == NULL) {
 		g_clear_error(&error);
 		runtime->stopped = true;
-		return;
-	}
-	if (length <= WIDGET_LINE_MAX) {
-		frame = json_tokener_parse(line);
+	} else if (!runtime->closed && length <= WIDGET_LINE_MAX) {
+		struct json_object *frame = json_tokener_parse(line);
 		if (frame != NULL && valid_frame(frame)) {
-			if (runtime->frame != NULL)
-				json_object_put(runtime->frame);
-			runtime->frame = frame;
-			gtk_widget_queue_draw(GTK_WIDGET(runtime->view));
-		} else if (frame != NULL) {
-			json_object_put(frame);
-		}
+			if (runtime->pending_frame != NULL) json_object_put(runtime->pending_frame);
+			runtime->pending_frame = frame;
+			schedule_widget_render(runtime);
+		} else if (frame != NULL) json_object_put(frame);
 	}
 	g_free(line);
 	widget_read_next(runtime);
+	widget_unref(runtime);
 }
 
 static void
 widget_read_next(struct home_widget_runtime *runtime)
 {
-	if (runtime->stopped || runtime->output == NULL)
+	if (runtime->closed || runtime->stopped || runtime->output == NULL)
 		return;
-	g_data_input_stream_read_line_async(runtime->output, G_PRIORITY_DEFAULT,
+	runtime->refs++;
+	g_data_input_stream_read_line_async(runtime->output, G_PRIORITY_DEFAULT_IDLE,
 	    runtime->cancel, widget_line_ready, runtime);
 }
 
@@ -521,11 +695,14 @@ home_widget_runtime_new(const struct home_widget_desc *desc)
 	    strcmp(desc->protocol, "ctlst-widget-1") != 0)
 		return NULL;
 	runtime = g_new0(struct home_widget_runtime, 1);
+	runtime->refs = 1;
+	runtime->images = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+	    (GDestroyNotify)cairo_surface_destroy);
 	runtime->desc = *desc;
 	runtime->visible = true;
 	runtime->cancel = g_cancellable_new();
 	load_theme_tokens(runtime);
-	runtime->view = GTK_DRAWING_AREA(gtk_drawing_area_new());
+	runtime->view = GTK_DRAWING_AREA(g_object_ref_sink(gtk_drawing_area_new()));
 	gtk_drawing_area_set_draw_func(runtime->view, draw_widget, runtime, NULL);
 	gtk_widget_set_hexpand(GTK_WIDGET(runtime->view), TRUE);
 	gtk_widget_set_vexpand(GTK_WIDGET(runtime->view), TRUE);
@@ -592,7 +769,16 @@ home_widget_runtime_set_visible(struct home_widget_runtime *runtime,
 
 	if (runtime == NULL || runtime->visible == visible)
 		return;
+	if (!visible) {
+		home_widget_runtime_cancel_pointer(runtime);
+		if (runtime->render_source != 0) {
+			g_source_remove(runtime->render_source);
+			runtime->render_source = 0;
+		}
+	}
 	runtime->visible = visible;
+	if (visible && (runtime->pending_frame != NULL || runtime->theme_dirty))
+		schedule_widget_render(runtime);
 	message = json_object_new_object();
 	json_object_object_add(message, "ctlst_widget", json_object_new_int(1));
 	json_object_object_add(message, "type", json_object_new_string("visibility"));
@@ -604,34 +790,36 @@ home_widget_runtime_set_visible(struct home_widget_runtime *runtime,
 void
 home_widget_runtime_cancel_pointer(struct home_widget_runtime *runtime)
 {
-	if (runtime == NULL)
+	if (runtime == NULL || !runtime->pointer_active)
 		return;
+	runtime->pointer_active = false;
 	send_pointer(runtime, "cancel", runtime->pointer_x, runtime->pointer_y);
 }
 
 void
 home_widget_runtime_free(struct home_widget_runtime *runtime)
 {
-	if (runtime == NULL)
+	if (runtime == NULL || runtime->closed)
 		return;
-	if (!runtime->stopped && runtime->input != NULL) {
-		struct json_object *message = json_object_new_object();
-
-		json_object_object_add(message, "ctlst_widget", json_object_new_int(1));
-		json_object_object_add(message, "type", json_object_new_string("shutdown"));
-		widget_send(runtime, message);
-		json_object_put(message);
-	}
+	runtime->closed = true;
 	runtime->stopped = true;
+	if (runtime->render_source != 0)
+		g_source_remove(runtime->render_source);
+	if (runtime->theme_monitor != NULL)
+		g_file_monitor_cancel(runtime->theme_monitor);
+	g_signal_handlers_disconnect_by_data(runtime->view, runtime);
+	gtk_drawing_area_set_draw_func(runtime->view, NULL, NULL, NULL);
+	GtkWidget *view = GTK_WIDGET(runtime->view);
+	GListModel *controllers = gtk_widget_observe_controllers(view);
+	for (guint i = 0; i < g_list_model_get_n_items(controllers); i++) {
+		GObject *controller = g_list_model_get_item(controllers, i);
+		g_signal_handlers_disconnect_by_data(controller, runtime);
+		g_object_unref(controller);
+	}
+	g_object_unref(controllers);
 	g_cancellable_cancel(runtime->cancel);
 	if (runtime->process != NULL)
 		g_subprocess_force_exit(runtime->process);
-	if (runtime->frame != NULL)
-		json_object_put(runtime->frame);
-	g_clear_object(&runtime->output);
-	g_clear_object(&runtime->input);
-	g_clear_object(&runtime->process);
-	g_clear_object(&runtime->theme_monitor);
-	g_clear_object(&runtime->cancel);
-	g_free(runtime);
+	/* Pending read/write completions own refs until cancellation finishes. */
+	widget_unref(runtime);
 }

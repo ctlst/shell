@@ -203,7 +203,7 @@ def test_home_v2_phases_wired_in_sources():
     assert "home-pager.h" in main
     assert "home_page_drag_begin" in main
     assert "home-rotation.h" in main
-    assert "strip_grid" in main
+    assert "page_grids" in main
     assert "home_widget_desc_scan_dir" in main
     assert 'visibility"' in main or "visibility" in main
     assert "home-rotation.c" in makefile
@@ -211,6 +211,7 @@ def test_home_v2_phases_wired_in_sources():
     assert "home-widget-runtime.c" in makefile
     assert "add_external_widgets" in main
     assert (HOME / "HOME-V2.md").is_file()
+
 
 
 def test_page_swipe_can_start_on_icons_and_widgets_without_arming_edit():
@@ -230,7 +231,9 @@ def test_page_swipe_can_start_on_icons_and_widgets_without_arming_edit():
     assert "home->pending_launcher_press != NULL" not in begin
     assert "distance >= HOME_TAP_SLOP" in update
     assert "cancel_launcher_drag_arm(home)" in update
-    assert "pager_page_stride(home) * 0.04" in update
+    assert "pager_page_stride(home) * home_page_drag_scale(home) * 0.04" in update
+    assert "home->layout_editing && !home_edit_page_swipe_at" in begin
+    assert "offset_x /= home_page_drag_scale(home)" in update
     assert "home->page_release_suppress = true" in update
     icon_branch = icon_begin.split("if (icon != NULL) {", maxsplit=1)[1]
     icon_branch = icon_branch.split("\n\t}", maxsplit=1)[0]
@@ -240,6 +243,7 @@ def test_page_swipe_can_start_on_icons_and_widgets_without_arming_edit():
     assert "start_launcher_icon_drag(home, icon)" in icon_branch
     assert "GTK_EVENT_SEQUENCE_CLAIMED" in icon_branch
     assert "g_timeout_add(" in icon_branch
+
 
 
 def test_gsk_pager_moves_a_retained_scene_on_the_frame_clock():
@@ -310,29 +314,16 @@ def test_gsk_pager_allocates_height_without_persisting_the_old_minimum():
     assert "gtk_widget_set_size_request(home->page_strip, strip_width,\n\t\t    request_height);" in sync
 
 
-def test_landscape_strip_reseeds_from_portrait_rows_into_side_columns():
+def test_gsk_pager_allocates_height_without_persisting_the_old_minimum():
     main = (HOME / "ctlsthome.c").read_text()
-    helper = main[main.index("static void\nseed_strip_grid_anchors") : main.index(
-        "\nstatic GtkWidget *\nmake_icon_page_panel"
-    )]
-    assert "home->landscape ? home_strip_rows(home) : home_cols(home)" in helper
-    assert "home->landscape ? home_cols(home) : home_strip_rows(home)" in helper
-    layout = main[main.index("static gboolean\nupdate_layout") : main.index(
-        "\nstatic void\ndraw_analog_clock"
-    )]
-    assert layout.index("home->landscape = landscape") < layout.index(
-        "seed_strip_grid_anchors(home)"
-    ) < layout.index("render_launcher_page(home)")
+    sync = main.split("sync_page_panel_widths(struct home *home)", 1)[1].split(
+        "static void\nensure_page_panels", 1)[0]
+    assert "int request_height = home->pager_gsk ? -1 : height;" in sync
+    assert "gtk_widget_set_size_request(panel, width, request_height);" in sync
+    assert "gtk_widget_set_size_request(home->page_strip, strip_width,\n\t\t    request_height);" in sync
 
 
-def test_landscape_strip_reserves_its_transposed_share_of_page_width():
-    main = (HOME / "ctlsthome.c").read_text()
-    sync = main[main.index("static void\nsync_page_panel_widths") : main.index(
-        "\nstatic void\nensure_page_panels"
-    )]
-    assert "(width - spacing) * home_strip_rows(home)" in sync
-    assert "(home_cols(home) + home_strip_rows(home))" in sync
-    assert "gtk_widget_set_size_request(home->strip_host, strip_w, -1)" in sync
+
 
 
 def test_landscape_glance_card_uses_compact_vertical_padding():

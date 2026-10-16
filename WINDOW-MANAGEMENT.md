@@ -32,3 +32,9 @@ Run `make check` and test destination ranges, long captions, target bounds,
 pointer/keyboard pass-through and cancelled drags. Use an isolated session
 with expendable windows before testing move/close actions on hardware.
 See [gestures](GESTUREMAP.md) and [VM testing](docs/CLEAN-ROOM-VM.md).
+
+The CTLST session uses Sway’s `focus_on_window_activation focus` policy. A
+valid application activation request brings its existing workspace forward;
+new-window placement remains owned by the existing workspace manager. Change
+this in the user Sway include and reload the session configuration to override.
+No extra focus watcher or polling is introduced.

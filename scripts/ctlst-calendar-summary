@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+"""Read selected Evolution/GOA calendars for Home. Never handles credentials."""
+import datetime as dt
+import json
+import os
+import time
+import gi
+gi.require_version('ECal', '2.0')
+gi.require_version('EDataServer', '1.2')
+from gi.repository import ECal, EDataServer, ICalGLib
+
+def summary():
+    registry = EDataServer.SourceRegistry.new_sync(None)
+    now = dt.datetime.now().astimezone()
+    first = now.replace(day=1,hour=0,minute=0,second=0,microsecond=0)
+    until = first + dt.timedelta(days=63)
+    events=[]; days=set(); failures=0; calendars=0
+    google = any(s.has_extension(EDataServer.SOURCE_EXTENSION_COLLECTION) and
+                 s.get_extension(EDataServer.SOURCE_EXTENSION_COLLECTION).get_backend_name() == 'google'
+                 for s in registry.list_sources(None))
+    try: zone_name=os.readlink('/etc/localtime').split('/zoneinfo/',1)[-1]
+    except OSError: zone_name='UTC'
+    local_zone=ICalGLib.Timezone.get_builtin_timezone(zone_name) or ICalGLib.Timezone.get_utc_timezone()
+    def timestamp(value):
+        if value.is_date():
+            return dt.datetime(value.get_year(),value.get_month(),value.get_day()).astimezone().timestamp()
+        return value.as_timet_with_zone(value.get_timezone() or local_zone)
+    for source in registry.list_sources(EDataServer.SOURCE_EXTENSION_CALENDAR):
+        if not source.get_enabled() or not source.get_extension(EDataServer.SOURCE_EXTENSION_CALENDAR).get_selected():continue
+        if source.get_uid() == 'birthdays':continue
+        calendars+=1
+        try:
+            client=ECal.Client.connect_sync(source,ECal.ClientSourceType.EVENTS,2,None)
+            client.set_default_timezone(local_zone)
+            seen=0
+            def instance(comp,start,end,*_):
+                nonlocal seen
+                seen+=1
+                if seen>300:return False
+                if comp.get_status() == ICalGLib.PropertyStatus.CANCELLED:return True
+                begin=timestamp(start); finish=timestamp(end)
+                day=dt.datetime.fromtimestamp(begin).date()
+                last=dt.datetime.fromtimestamp(max(begin,finish-1)).date()
+                for n in range(min(63,(last-day).days+1)):
+                    d=day+dt.timedelta(days=n)
+                    if (d.year,d.month)==(now.year,now.month):days.add(d.day)
+                if finish >= now.timestamp():
+                    events.append(dict(title=(comp.get_summary() or 'Untitled event')[:160],start=begin,end=finish,all_day=start.is_date()))
+                return True
+            client.generate_instances_sync(int(first.timestamp()),int(until.timestamp()),None,instance,None)
+        except Exception:
+            failures+=1
+    events.sort(key=lambda e:e['start'])
+    for event in events:
+        start=dt.datetime.fromtimestamp(event['start']).astimezone()
+        date='Today' if start.date()==now.date() else start.strftime('%a %b %-d')
+        event['when']=date+(' · All day' if event['all_day'] else start.strftime(' · %-I:%M %p'))
+    return dict(events=events[:3],days=sorted(days),month=now.month,year=now.year,google=google,
+                calendars=calendars,errors=failures,checked_at=int(time.time()))
+
+if __name__ == '__main__':
+    try:result=summary()
+    except Exception:result={'events':[],'days':[],'errors':1,'google':False}
+    print(json.dumps(result,separators=(',',':')))

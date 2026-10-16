@@ -14,7 +14,7 @@ the next login. `Super` refers to the configured Sway modifier (default Mod4).
 | Next/previous task | Horizontal scrub on bottom charm | Wheel/trackpad over charm | `Super+Tab` / `Super+Shift+Tab` |
 | Reveal task dock | Hold charm | Hover charm | Task-switch shortcuts reveal it |
 | Overview | Slow bottom pull or Recent apps | Recent apps in bar | `Super+O` |
-| App drawer | Upward pull in Home content | Apps on Home | `Super+D` |
+| App drawer | Upward pull from the lower 55% of Home content, excluding protected edges | Apps on Home | `Super+D` |
 | Quick Settings | Top pull or bar chevron | Chevron/network control | `Super+M` / `Super+A` |
 | Back | Inward side-edge swipe | Surface-specific Back control | `Super+BackSpace` |
 | Close focused window | Action fan | Surface Close; optional taskbar middle-click | `Super+Shift+Q` |

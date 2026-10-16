@@ -25,7 +25,7 @@ CTLST Shell is a developer beta for Sway-based Linux sessions.
 | Notes | Local text preview, visible refresh and external-editor launch | An editor must be installed separately; notes are unencrypted. |
 | External widgets | NDJSON helpers, scaffolding, validation and registration | Helpers run as the user; protocol v1 has no keyboard-event channel. |
 | Clock and calendar | Clock and month display | Launching an app requires an external handler. |
-| At a Glance | Calendar status display | No event provider; displays “Calendar not connected.” |
+| At a Glance | Responsive battery, audio, Wi-Fi, signal, RAM and CPU status | Availability depends on system providers. |
 | Memory policy | Explicit cgroup limits for supported launches | Pressure eviction, freezing and compositor restarts are not implemented. |
 | Privacy screen | Swipe, pointer and keyboard dismissal | No authentication or session-lock security boundary. |
 | Embedded agent panel | Disabled-by-default experimental frontend | No supported backend or complete input/layout integration. |

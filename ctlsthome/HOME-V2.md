@@ -9,11 +9,30 @@ runtime modules. Build from the repository root with `make core`.
 Positions are stored in portrait-logical grid coordinates. The default grid
 has five columns and seven rows:
 
-- On the first page, the top four rows hold widgets and the bottom three hold apps.
-- Later pages support page-local widgets and apps in available grid cells.
-- In landscape, the first-page widget cluster stays upright and the app strip
-  transposes to the side. Input coordinates follow the rendered transform.
+- Every page supports widgets and apps throughout the available grid.
+- The favorites tray stays at the bottom in portrait and becomes a vertical
+  strip on the right in landscape. Icons remain upright.
 - Saved positions are retained across rotation and entry into edit mode.
+
+The tray is part of the scaled edit preview. Drag apps between it and Home
+pages to change membership and order; an explicitly empty tray stays empty.
+On a new layout, the portable default includes the system's default HTTPS
+browser when one exists. It does not seed missing phone applications. Layout
+changes are saved in the existing user Home layout; they do not overwrite
+application-role configuration. Editing uses a compact Wallpaper/Widgets/page/
+Done row; direct keyboard layout editing remains incomplete.
+
+At a Glance shows battery, audio output, Wi-Fi, cellular signal, RAM and CPU
+with matching icons, reflowing by available size. Missing providers show an
+unavailable state. Calendar stays a month grid and refreshes after local-date
+changes, including time synchronization after startup. Optional EDS event-day
+markers and Photos/Now Playing widgets are described in
+[extra widgets](../docs/EXTRA-WIDGETS.md).
+
+Home suppresses clock/status/widget redraws during paging and while hidden,
+then applies the newest pending update. Helper writes are bounded and
+asynchronous. Image thumbnails are loaded when accepting a scene at rest,
+not from the draw callback. This does not guarantee a particular frame rate.
 
 Home remains visible while Sway changes output orientation. It reflows content
 without a black cover or frozen-frame transition. Sensor integration is separate;

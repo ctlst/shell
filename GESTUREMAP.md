@@ -36,7 +36,7 @@ Output/touch/haptic selection and natural scrolling are configured in
 | --- | --- | --- |
 | Top bar | Down | Progressive Quick Settings pull |
 | Upper 40% of visible Home content | Down | Quick Settings pull; expanded region applies only on Home |
-| Lower-middle content on Home or a windowless workspace | Up | Progressive app drawer pull |
+| Home/windowless content from 45% of output height to the protected bottom inset | Up | Progressive app drawer pull |
 | Physical bottom edge | Quick upward flick | Home |
 | Physical bottom edge | Slow upward pull | Overview preview and commit |
 | Bottom charm | Horizontal scrub | Step through tasks |

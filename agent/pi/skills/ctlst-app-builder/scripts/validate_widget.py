@@ -13,7 +13,7 @@ from pathlib import Path
 
 
 ID = re.compile(r"[a-z0-9][a-z0-9_-]*\Z")
-NODE_TYPES = {"rect", "circle", "line", "text"}
+NODE_TYPES = {"rect", "circle", "line", "text", "image"}
 THEME_TOKENS = {
     "@ctlst_bg",
     "@ctlst_panel",
@@ -89,6 +89,9 @@ def check_frame(frame: object) -> None:
     for index, node in enumerate(nodes):
         if not isinstance(node, dict) or node.get("type") not in NODE_TYPES:
             raise ValueError(f"unsupported node at index {index}")
+        if node.get("type") == "image":
+            if not isinstance(node.get("path"), str) or not Path(node["path"]).is_absolute():
+                raise ValueError("image.path must be an absolute thumbnail path")
         for field in ("fill", "stroke"):
             if field in node:
                 color = node[field]

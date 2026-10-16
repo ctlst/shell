@@ -91,6 +91,8 @@ install: core install-widget-tools
 	install -m 0644 dev.ctlst.Settings.desktop "$(DESTDIR)$(PREFIX)/share/applications/"
 	install -m 0644 dev.ctlst.Battery.desktop "$(DESTDIR)$(PREFIX)/share/applications/"
 	install -m 0644 dev.ctlst.Settings.svg "$(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/apps/"
+	mkdir -p "$(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/status"
+	install -m 0644 icons/hicolor/scalable/status/*.svg "$(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/status/"
 	install -m 0644 dev.ctlst.Apps.svg "$(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/apps/"
 	for script in $(CORE_LIBEXEC); do \
 		install -m 0755 "scripts/$$script" "$(DESTDIR)$(LIBEXECDIR)/$$script"; \
@@ -130,3 +132,11 @@ check:
 clean:
 	find "$(abspath $(BUILD_DIR))" -type f -delete 2>/dev/null || true
 	find "$(abspath $(BUILD_DIR))" -depth -type d -empty -delete 2>/dev/null || true
+
+# Optional external providers; not part of core or its dependency footprint.
+.PHONY: install-extra-widgets
+install-extra-widgets:
+	mkdir -p "$(DESTDIR)$(BINDIR)" "$(DESTDIR)$(PREFIX)/share/ctlst/widgets" "$(DESTDIR)$(PREFIX)/share/applications"
+	install -m 0755 scripts/ctlst-calendar-summary scripts/ctlst-home-tools "$(DESTDIR)$(BINDIR)/"
+	install -m 0644 widgets/media.yaml widgets/photos.yaml "$(DESTDIR)$(PREFIX)/share/ctlst/widgets/"
+	install -m 0644 dev.ctlst.Photos.desktop "$(DESTDIR)$(PREFIX)/share/applications/"

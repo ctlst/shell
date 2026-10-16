@@ -62,3 +62,30 @@ accessibility and physical GPU/input behavior require additional validation.
 
 Alpine/postmarketOS validation is incomplete. Other devices are experimental.
 See [BETA.md](../BETA.md) for supported functionality and limitations.
+
+## Responsive Home and widget integration — 2026-10-15
+
+The shared Home, widget runtime, drawer start-region and Shade changes were
+checked after merging with this tree's keyboard, Bluetooth and battery work.
+
+- `make check`: 167 passed, 12 explicit host/dependency skips; layered
+  configuration syntax passed. Python syntax and diff whitespace checks passed.
+- All seven core programs built in the running AArch64 postmarketOS VM with
+  `-Wall -Wextra -Werror`. No resulting binary was committed or deployed to the
+  Arch reference phone.
+- Native GTK fixtures passed calendar date jumps/rollover, motion/off-page
+  clock and status suppression, latest-frame catch-up, bounded asynchronous
+  helper writes and cancellation lifetime. Dock fixtures passed transfer,
+  ordering, transformed picking and saved/explicitly empty membership in
+  portrait, landscape and short allocations. Existing Home keyboard navigation
+  also passed after integration.
+- Native gesture fixtures passed 45%-height drawer starts, direction/diagonal
+  rejection, protected edges, output offsets and existing Shade overlap.
+- Inspected actual merged Home captures at 1080×2160 and 2160×1080 with scale
+  2.25, and 640×1280 with scale 2. Emulated rendering required settling before
+  capture; these checks do not establish rotation latency or hardware frame rate.
+
+Tests ran in separate headless Sway sessions with private configuration. The
+core build and fixtures are not a fresh install, package upgrade, hardware
+radio, calendar-account synchronization or physical-touch acceptance gate.
+The optional Photos/media providers remain separate from the core install.

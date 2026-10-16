@@ -22,7 +22,7 @@ int main(void)
 	assert(SHADE_HOME_PULL_START_DEPTH == 0.60);
 	for (size_t i = 0; i < sizeof(outputs) / sizeof(outputs[0]); i++) {
 		state.output.rect = outputs[i];
-		for (int percent = 50; percent <= 60; percent += 5) {
+		for (int percent = 45; percent <= 60; percent += 5) {
 			struct point start = {.x = outputs[i].x + outputs[i].width / 2.,
 			    .y = outputs[i].y + outputs[i].height * percent / 100.};
 			struct point down = {.x = start.x, .y = start.y + 100};

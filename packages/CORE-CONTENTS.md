@@ -4,6 +4,10 @@ The `ctlst-shell` install target contains the shell's source-built programs,
 configuration, integration scripts, documentation and artwork. External
 applications and libraries are installed by the operating system.
 
+The separate `install-extra-widgets` target installs optional calendar, Photos
+and Now Playing providers. It is not a dependency of `install` or `core`;
+see [extra widgets](../docs/EXTRA-WIDGETS.md) for external dependencies and limits.
+
 ## Source layout
 
 | Component | Language / format | Location |

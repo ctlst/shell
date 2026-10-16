@@ -1,0 +1,12 @@
+id: media
+name: Now Playing
+kind: exec
+protocol: ctlst-widget-1
+interaction: pointer
+min_columns: 2
+min_rows: 2
+default_columns: 3
+default_rows: 2
+exec: ctlst-home-tools
+args:
+  - media

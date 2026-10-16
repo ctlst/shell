@@ -164,6 +164,8 @@ struct app {
 	GtkLabel *sound_status;
 	GtkWidget *sound_profiles;
 	GtkCssProvider *css;
+	GFileMonitor *theme_monitor;
+	char *theme_source;
 	char runtime_dir[256];
 	char control_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
 	char gesture_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
@@ -730,12 +732,61 @@ load_theme(struct app *app)
 	char *theme = NULL;
 	char *combined;
 
-	g_file_get_contents(theme_path, &theme, NULL, NULL);
-	combined = g_strconcat(theme != NULL ? theme : "", component_css, NULL);
+	if (!g_file_get_contents(theme_path, &theme, NULL, NULL) ||
+	    g_strcmp0(theme, app->theme_source) == 0) {
+		g_free(theme);
+		g_free(theme_path);
+		return;
+	}
+	/* Theme variants override component defaults, as they do on Home. */
+	combined = g_strconcat(component_css, "\n", theme, NULL);
 	gtk_css_provider_load_from_string(app->css, combined);
+	g_free(app->theme_source);
+	app->theme_source = g_strdup(theme);
 	g_free(combined);
 	g_free(theme);
 	g_free(theme_path);
+}
+
+static void
+theme_file_changed(GFileMonitor *monitor, GFile *file, GFile *other,
+    GFileMonitorEvent event, gpointer data)
+{
+	char *name = file != NULL ? g_file_get_basename(file) : NULL;
+	char *other_name = other != NULL ? g_file_get_basename(other) : NULL;
+	bool relevant = g_strcmp0(name, "theme.css") == 0 ||
+	    g_strcmp0(other_name, "theme.css") == 0;
+
+	(void)monitor;
+	if (relevant && (event == G_FILE_MONITOR_EVENT_CHANGES_DONE_HINT ||
+	    event == G_FILE_MONITOR_EVENT_CREATED ||
+	    event == G_FILE_MONITOR_EVENT_MOVED_IN ||
+	    event == G_FILE_MONITOR_EVENT_RENAMED))
+		load_theme(data);
+	g_free(name);
+	g_free(other_name);
+}
+
+static void
+setup_theme(struct app *app)
+{
+	char *path = active_theme_path();
+	char *directory = g_path_get_dirname(path);
+	GFile *file = g_file_new_for_path(directory);
+
+	app->css = gtk_css_provider_new();
+	/* Watch the directory because theme rendering replaces the file atomically. */
+	app->theme_monitor = g_file_monitor_directory(file,
+	    G_FILE_MONITOR_WATCH_MOVES, NULL, NULL);
+	if (app->theme_monitor != NULL)
+		g_signal_connect(app->theme_monitor, "changed",
+		    G_CALLBACK(theme_file_changed), app);
+	load_theme(app);
+	gtk_style_context_add_provider_for_display(gdk_display_get_default(),
+	    GTK_STYLE_PROVIDER(app->css), GTK_STYLE_PROVIDER_PRIORITY_USER);
+	g_object_unref(file);
+	g_free(directory);
+	g_free(path);
 }
 
 static char *
@@ -2934,7 +2985,7 @@ build_quick_settings(struct app *app)
 	gtk_grid_attach(GTK_GRID(quick), close, 2, 1, 1, 1);
 	gtk_box_append(GTK_BOX(root), quick);
 	gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroller),
-	    GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+	    GTK_POLICY_NEVER, GTK_POLICY_EXTERNAL);
 	gtk_scrolled_window_set_kinetic_scrolling(
 	    GTK_SCROLLED_WINDOW(scroller), TRUE);
 	gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroller), root);
@@ -3292,7 +3343,7 @@ build_quick_settings(struct app *app)
 	app->notification_list = GTK_BOX(
 	    gtk_box_new(GTK_ORIENTATION_VERTICAL, 0));
 	gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(notification_scroller),
-	    GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+	    GTK_POLICY_NEVER, GTK_POLICY_EXTERNAL);
 	gtk_scrolled_window_set_kinetic_scrolling(
 	    GTK_SCROLLED_WINDOW(notification_scroller), TRUE);
 	gtk_box_append(GTK_BOX(content), GTK_WIDGET(app->notification_list));
@@ -3642,10 +3693,7 @@ activate(GtkApplication *application, gpointer data)
 	/* Start fully collapsed too, so the first progressive pull is top-down. */
 	apply_shade_margin(app, 0.0);
 
-	app->css = gtk_css_provider_new();
-	load_theme(app);
-	gtk_style_context_add_provider_for_display(gdk_display_get_default(),
-	    GTK_STYLE_PROVIDER(app->css), GTK_STYLE_PROVIDER_PRIORITY_USER);
+	setup_theme(app);
 
 	gtk_widget_add_css_class(root, "shade-root");
 	gtk_widget_add_css_class(handle, "shade-handle");
@@ -3696,6 +3744,8 @@ static void
 shutdown_app(GApplication *application, gpointer data)
 {
 	struct app *app = data;
+	g_clear_object(&app->theme_monitor);
+	g_clear_pointer(&app->theme_source, g_free);
 
 	(void)application;
 	if (app->control_source != 0)

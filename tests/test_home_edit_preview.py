@@ -13,12 +13,14 @@ def test_edit_preview_uses_a_real_input_transform_and_separate_controls():
     assert "sum + chrome <= width - 2 * frame->inset" in frame
     assert "gtk_overlay_add_overlay(home->edit_scene," in main
     assert "gtk_box_append(GTK_BOX(home->edit_controls), toolbar)" in main
-    assert "gtk_box_append(GTK_BOX(home->edit_controls), page_bar)" in main
+    assert "GtkWidget *actions[] = { wallpaper, add_widget, page_bar, done }" in main
+    assert "gtk_box_append(GTK_BOX(scene_content), home->tray)" in main
     assert "gtk_overlay_add_overlay(home->context_overlay, toolbar)" not in main
     assert "offset_x /= home->edit_frame->scale" in main
     assert "offset_y /= home->edit_frame->scale" in main
-    assert "!point_in_edit_controls(home, ox, oy)" in main
+    assert "if (point_in_edit_controls(home, ox, oy))" in main
     assert "editing ? GTK_PHASE_CAPTURE : GTK_PHASE_BUBBLE" in main
+
 
 
 def test_edit_spacing_is_documented_and_reloadable():
@@ -31,12 +33,12 @@ def test_edit_spacing_is_documented_and_reloadable():
     assert "controls_gap_px: 12" in example
 
 
-def test_edit_controls_have_themeable_dock_clearance_and_labeled_page_actions():
+def test_edit_controls_use_one_row_and_labeled_page_actions():
     main = (ROOT / "ctlsthome/ctlsthome.c").read_text()
     css = (ROOT / "themes/components.css").read_text()
-    assert 'gtk_widget_add_css_class(home->edit_controls, "home-edit-controls")' in main
+    assert 'gtk_widget_add_css_class(home->edit_controls, "home-edit-controls-inline")' in main
     for source in (main, css):
-        assert ".home-edit-controls { padding-bottom: 28px; }" in source
+        assert ".home-edit-controls-inline { padding: 0; }" in source
         assert ".home-launcher-page-bar button" in source
         assert "min-width: 44px;" in source
     assert 'GTK_ACCESSIBLE_PROPERTY_LABEL, "Add Home page"' in main
@@ -44,6 +46,7 @@ def test_edit_controls_have_themeable_dock_clearance_and_labeled_page_actions():
     assert "gtk_accessible_reset_relation(GTK_ACCESSIBLE(home->launcher_page_add)" in main
     assert "gtk_accessible_reset_relation(GTK_ACCESSIBLE(home->launcher_page_remove)" in main
     assert "home->launcher_page_count < home->config.page_max_pages" in main
+
 
 def test_widget_picker_is_bounded_without_resizing_the_home_grid():
     main = (ROOT / "ctlsthome/ctlsthome.c").read_text()

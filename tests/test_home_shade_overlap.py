@@ -15,7 +15,7 @@ def test_home_shades_overlap_at_center_by_default():
     assert config.getfloat("shade", "home_pull_start_fraction") == .60
     source = (ROOT / "ctlst-gestured/ctlst-gestured.c").read_text()
     assert "#define SHADE_HOME_PULL_START_DEPTH 0.60" in source
-    assert "#define DRAWER_PULL_START_Y_MIN 0.50" in source
+    assert "#define DRAWER_PULL_START_Y_MIN 0.45" in source
 
 
 def test_native_home_shade_overlap(tmp_path):

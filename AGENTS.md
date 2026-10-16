@@ -35,3 +35,10 @@ this repository. Describe current behavior and reproducible steps. Keep design
 requirements separate from implemented features. Avoid conversation summaries,
 personal development plans, deployment diaries and references to unavailable
 files or unpublished test tools.
+
+For UI and widget layout changes, screenshot the actual rendered result and
+inspect balanced spacing, padding, visual weight and icon/text alignment. Check
+portrait, landscape and narrow viewports at integer and fractional scales. Use
+logical units and preserve touch targets and native scrolling. Keep private
+captures out of Git. Builds alone do not establish visual quality; report missing
+rendering coverage. Suppress widget redraws during swipes and while off screen.
