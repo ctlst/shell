@@ -379,6 +379,8 @@ struct home {
 	double page_drag_start_x;
 	double page_drag_start_y;
 	double page_strip_x; /* absolute translateX of the page strip */
+	double page_drag_target;
+	guint page_drag_source;
 	guint page_settle_source;
 	int64_t page_settle_started_us;
 	double page_settle_from;
@@ -5414,6 +5416,7 @@ set_visible(struct home *home, bool visible)
 		gtk_window_present(home->window);
 		finish_show(home);
 	} else {
+		abort_page_settle(home);
 		set_layout_editing(home, false);
 		if (home->prompt != NULL)
 			end_prompt_session(home, "blur");
@@ -7323,9 +7326,9 @@ finish_page_settle(struct home *home)
 	if (commit >= 0 && commit < home->launcher_page_count)
 		home->launcher_current_page = commit;
 	home->page_drag_dx = 0.0;
+	home->page_drag_owned = false;
 	clear_page_drag_offset(home);
 	refresh_launcher_page_bar(home);
-	home->page_drag_owned = false;
 	resume_widget_updates(home);
 }
 
@@ -7354,6 +7357,16 @@ page_settle_tick(GtkWidget *widget, GdkFrameClock *frame_clock, gpointer data)
 }
 
 static void
+cancel_page_drag_frame(struct home *home)
+{
+	if (home->page_drag_source == 0)
+		return;
+	gtk_widget_remove_tick_callback(GTK_WIDGET(home->context_overlay),
+	    home->page_drag_source);
+	home->page_drag_source = 0;
+}
+
+static void
 cancel_page_settle(struct home *home)
 {
 	if (home->page_settle_source == 0)
@@ -7366,6 +7379,9 @@ cancel_page_settle(struct home *home)
 static void
 abort_page_settle(struct home *home)
 {
+	cancel_page_drag_frame(home);
+	home->page_drag_active = false;
+	home->page_drag_pending = false;
 	cancel_page_settle(home);
 	/* Flush a pending page commit / transform before a new gesture. */
 	if (home->page_settle_commit >= 0 || home->page_drag_dx != 0.0 ||
@@ -7376,6 +7392,7 @@ abort_page_settle(struct home *home)
 static void
 start_page_settle(struct home *home, double from_dx, double to_dx)
 {
+	cancel_page_drag_frame(home);
 	cancel_page_settle(home);
 	home->page_settle_from = from_dx;
 	home->page_settle_to = to_dx;
@@ -7452,6 +7469,29 @@ home_page_drag_begin(GtkGestureDrag *gesture, double start_x, double start_y,
 	home->page_drag_dx = 0.0;
 }
 
+static gboolean
+page_drag_frame(GtkWidget *widget, GdkFrameClock *clock, gpointer data)
+{
+	struct home *home = data;
+	(void)widget;
+	(void)clock;
+	home->page_drag_source = 0;
+	if (home->page_drag_active)
+		apply_page_drag_offset(home, home->page_drag_target);
+	return G_SOURCE_REMOVE;
+}
+
+static void
+queue_page_drag_frame(struct home *home, double offset)
+{
+	/* Keep the newest sample once per display frame. Do not debounce or
+	 * ease direct finger tracking: that would add input latency. */
+	home->page_drag_target = offset;
+	if (home->page_drag_source == 0)
+		home->page_drag_source = gtk_widget_add_tick_callback(
+		    GTK_WIDGET(home->context_overlay), page_drag_frame, home, NULL);
+}
+
 static void
 home_page_drag_update(GtkGestureDrag *gesture, double offset_x, double offset_y,
     gpointer data)
@@ -7509,7 +7549,7 @@ home_page_drag_update(GtkGestureDrag *gesture, double offset_x, double offset_y,
 	    offset_x < 0.0))
 		offset_x *= 0.35;
 	offset_x = CLAMP(offset_x, -max_dx, max_dx);
-	apply_page_drag_offset(home, offset_x);
+	queue_page_drag_frame(home, offset_x);
 }
 
 static void
@@ -7525,6 +7565,7 @@ home_page_drag_end(GtkGestureDrag *gesture, double offset_x, double offset_y,
 
 	(void)gesture;
 	(void)offset_y;
+	cancel_page_drag_frame(home);
 	if (!home->page_drag_active) {
 		home->page_drag_pending = false;
 		return;
@@ -8752,6 +8793,8 @@ shutdown_app(GApplication *application, gpointer data)
 	struct home *home = data;
 
 	(void)application;
+	cancel_page_drag_frame(home);
+	cancel_page_settle(home);
 	g_clear_pointer(&home->pending_action_id, g_free);
 	unlink(home->state_path);
 	unlink(home->focus_path);

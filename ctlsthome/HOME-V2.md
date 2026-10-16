@@ -34,6 +34,13 @@ then applies the newest pending update. Helper writes are bounded and
 asynchronous. Image thumbnails are loaded when accepting a scene at rest,
 not from the draw callback. This does not guarantee a particular frame rate.
 
+Page dragging keeps the newest touch offset and applies it once per GTK frame.
+It does not debounce or ease finger tracking. Paging translates the retained
+GTK/GSK allocation and reuses unchanged child layout. Picking, edit guides, drop
+targets and paint share the same transform throughout motion.
+Release cancels queued touch motion and settles from the last painted offset.
+Hiding Home cancels pending motion. No timer remains running for a settled pager.
+
 Home remains visible while Sway changes output orientation. It reflows content
 without a black cover or frozen-frame transition. Sensor integration is separate;
 see [rotation](ROTATION.md).
@@ -173,3 +180,18 @@ Run `make check` for source and fixture tests. The included
 allocation and picking in a disposable Wayland session. Test layout changes
 with portrait/landscape allocation, page changes, editing and applicable inputs.
 See [VM testing](../docs/CLEAN-ROOM-VM.md) and [validation results](../release/VALIDATION.md).
+
+
+### Swipe performance checks
+
+Use [home-pager-frame-test.c](../tests/home-pager-frame-test.c) in a disposable
+Wayland session to check input bursts, child layout/paint reuse, release
+continuity, destination picking, cancellation and edit coordinates. It includes
+the production Home source; link the other Home modules and the dependencies
+listed in the component Makefile. Keep private screenshots outside Git.
+
+Use a frame-clock update for direct manipulation, not a trailing debounce timer.
+Defer expensive content refreshes until the gesture settles and apply only the
+newest pending state. Keep retained content and stop frame callbacks at rest.
+Validate rendered bounds and tap/drop coordinates after movement and rotation;
+measure real hardware separately from software-rendered VM correctness tests.

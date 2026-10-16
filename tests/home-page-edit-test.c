@@ -24,6 +24,9 @@ int main(void)
 	struct home home = {.pager_gsk=true, .launcher_page_count=3,
 	    .page_panel_count=3, .haptic_fd=-1, .haptic_effect_id=-1};
 	home_config_set_defaults(&home.config);
+	/* Settling resumes the real clock update path. */
+	home.clock = GTK_LABEL(gtk_label_new(""));
+	home.date = GTK_LABEL(gtk_label_new(""));
 	home.page_strip = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 16);
 	gtk_box_set_homogeneous(GTK_BOX(home.page_strip), TRUE);
 	for (int i = 0; i < 3; i++) {
