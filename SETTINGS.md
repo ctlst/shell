@@ -17,6 +17,9 @@ Back, Escape, platform Back and Alt+Left return to the index. Escape at the
 index closes Settings. Selector popups consume Escape before page navigation.
 Returning to the index restores focus and scroll position for the category.
 
+The index and detail pages hide scrollbar chrome while preserving native kinetic
+scrolling, mouse-wheel input and keyboard focus scrolling.
+
 Touch, pointer and Tab/Enter activate the same controls. Long names ellipsize in
 closed selectors and wrap in their popups; stored values are not truncated.
 Back/Close remain available during operations.

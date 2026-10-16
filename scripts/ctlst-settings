@@ -458,7 +458,7 @@ class Settings(Gtk.Application):
                 card.append(button)
             content.append(section)
         scroll = Gtk.ScrolledWindow(vexpand=True)
-        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.EXTERNAL)
         scroll.set_kinetic_scrolling(True)
         scroll.set_child(content)
         return scroll
@@ -479,7 +479,7 @@ class Settings(Gtk.Application):
         if name != "index" and name not in self.built_pages:
             self.built_pages.add(name)
             scroll = Gtk.ScrolledWindow(vexpand=True)
-            scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+            scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.EXTERNAL)
             scroll.set_kinetic_scrolling(True)
             scroll.set_child(Gtk.Label(label="Loading…"))
             self.page_stack.add_named(scroll, name)
